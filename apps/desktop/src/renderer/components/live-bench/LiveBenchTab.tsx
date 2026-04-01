@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Play, Square, RotateCw, Send, RefreshCw, Clipboard } from 'lucide-react'
+import { Play, Square, RotateCw, Send, RefreshCw, Clipboard, Activity, AlertTriangle, Download } from 'lucide-react'
 import { LineChart, Line, ResponsiveContainer } from 'recharts'
 import { useProjectStore } from '../../stores/projectStore'
 
@@ -11,7 +11,22 @@ interface SignalState {
   history: number[]
 }
 
+interface CompareRow {
+  signal: string
+  simulated: number
+  observed: number
+  delta: number
+  status: 'match' | 'deviation' | 'mismatch'
+}
+
 type ConnStatus = 'disconnected' | 'connecting' | 'connected'
+
+const SIM_PARAM_DEFS = [
+  { key: 'wheel_radius', label: 'Wheel Radius', step: 0.001, unit: 'm' },
+  { key: 'chassis_length', label: 'Chassis Length', step: 0.01, unit: 'm' },
+  { key: 'chassis_width', label: 'Chassis Width', step: 0.01, unit: 'm' },
+  { key: 'motor_torque', label: 'Motor Torque', step: 0.01, unit: 'Nm' },
+] as const
 
 export default function LiveBenchTab() {
   const store = useProjectStore()
@@ -29,10 +44,47 @@ export default function LiveBenchTab() {
   const [flashBanner, setFlashBanner] = useState(false)
   const [cameraConnected, setCameraConnected] = useState(true)
   const [cameraUrl, setCameraUrl] = useState('')
+
+  // Simulation state
+  const [simParams, setSimParams] = useState({
+    wheel_radius: 0.033, chassis_length: 0.16, chassis_width: 0.14,
+    motor_torque: 0.5, kp: 2.0, target_distance: 0.25,
+  })
+  const [simTrajectory, setSimTrajectory] = useState<any[]>([])
+  const [simRunning, setSimRunning] = useState(false)
+  const [simPanelFocused, setSimPanelFocused] = useState(false)
+  const [robotPos, setRobotPos] = useState({ x: 200, y: 150 })
+  const [robotAngle, setRobotAngle] = useState(-Math.PI / 2)
+  const [robotTrail, setRobotTrail] = useState<{ x: number; y: number }[]>([])
+  const [obstacles] = useState([
+    { x: 300, y: 80, w: 30, h: 20 },
+    { x: 120, y: 220, w: 25, h: 25 },
+    { x: 320, y: 200, w: 20, h: 30 },
+  ])
+
+  // Sim vs Real comparison state
+  const [comparison, setComparison] = useState<CompareRow[]>([])
+  const [mismatchAlert, setMismatchAlert] = useState('')
+  const [paramsSource, setParamsSource] = useState<'manual' | 'onshape'>('manual')
+  const [resyncMsg, setResyncMsg] = useState('')
+  const [resyncing, setResyncing] = useState(false)
+
   const wsRef = useRef<WebSocket | null>(null)
   const signalsRef = useRef<Record<string, SignalState>>({})
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const simPanelRef = useRef<HTMLDivElement>(null)
+  const animFrameRef = useRef<number>(0)
 
-  // Fetch serial ports
+  const serialConnected = mode === 'serial' && status === 'connected'
+  const bothActive = simRunning && serialConnected
+
+  // Check if Onshape source is connected
+  useEffect(() => {
+    const hasOnshape = store.sources.some((s: any) => s.source_type === 'onshape')
+    setParamsSource(hasOnshape ? 'onshape' : 'manual')
+  }, [store.sources])
+
+  // ── Fetch serial ports ──
   const fetchPorts = useCallback(async () => {
     try {
       const res = await fetch('/api/serial-ports')
@@ -45,7 +97,7 @@ export default function LiveBenchTab() {
 
   useEffect(() => { fetchPorts() }, [])
 
-  // Poll state when connected
+  // ── Poll state when connected ──
   useEffect(() => {
     if (status !== 'connected') return
     const iv = setInterval(async () => {
@@ -74,6 +126,35 @@ export default function LiveBenchTab() {
     return () => clearInterval(iv)
   }, [status, pid])
 
+  // ── Auto-compare sim vs real when both active ──
+  useEffect(() => {
+    if (!bothActive) {
+      setComparison([])
+      setMismatchAlert('')
+      return
+    }
+    const iv = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/projects/${pid}/simulator/compare`, { method: 'POST' })
+        const data = await res.json()
+        const rows: CompareRow[] = data.comparisons || []
+        setComparison(rows)
+
+        // Check for mismatches to show alert
+        const mismatched = rows.filter(r => r.status === 'mismatch')
+        if (mismatched.length > 0) {
+          const sigNames = mismatched.map(r => r.signal).join(', ')
+          setMismatchAlert(
+            `Simulation mismatch detected \u2014 wheel_radius may be incorrect. Check Onshape model dimensions. Mismatched signals: ${sigNames}`
+          )
+        } else {
+          setMismatchAlert('')
+        }
+      } catch { /* */ }
+    }, 2000)
+    return () => clearInterval(iv)
+  }, [bothActive, pid])
+
   const connect = async () => {
     setStatus('connecting')
     setAnomalies([])
@@ -94,7 +175,6 @@ export default function LiveBenchTab() {
 
     ws.onopen = () => {
       setStatus('connected')
-      // Discover devices after 2s
       setTimeout(async () => {
         try {
           const disc = await store.discoverDevices(pid)
@@ -111,7 +191,6 @@ export default function LiveBenchTab() {
       try {
         const data = JSON.parse(evt.data)
 
-        // Handle signals array from packet
         if (data.packet?.signals && Array.isArray(data.packet.signals)) {
           setSignals(prev => {
             const next = { ...prev }
@@ -132,12 +211,10 @@ export default function LiveBenchTab() {
           })
         }
 
-        // Anomalies
         if (data.anomalies?.length) {
           setAnomalies(prev => [...data.anomalies, ...prev].slice(0, 100))
         }
 
-        // Events
         if (data.event === 'disconnected') {
           setStatus('disconnected')
           setSignals({})
@@ -189,7 +266,7 @@ export default function LiveBenchTab() {
         timestamp: Date.now(),
         prompt: 'Robot anomalies detected. ' + (data.report || '') + '\nAnalyze the robot code, identify the bug, and generate corrected code.',
       }))
-      alert('Logs sent — switch to Intelligence tab')
+      alert('Logs sent \u2014 switch to Intelligence tab')
     } catch { /* */ }
   }
 
@@ -216,8 +293,237 @@ export default function LiveBenchTab() {
     return value.toFixed(3)
   }
 
+  // ── Canvas drawing ──
+  const drawCanvas = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const W = canvas.width
+    const H = canvas.height
+
+    ctx.fillStyle = '#0a0a0f'
+    ctx.fillRect(0, 0, W, H)
+
+    ctx.strokeStyle = '#1a1a2e'
+    ctx.lineWidth = 0.5
+    for (let gx = 0; gx < W; gx += 20) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke() }
+    for (let gy = 0; gy < H; gy += 20) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke() }
+
+    ctx.fillStyle = '#ef4444'
+    for (const o of obstacles) {
+      ctx.fillRect(o.x, o.y, o.w, o.h)
+    }
+
+    if (robotTrail.length > 1) {
+      ctx.beginPath()
+      ctx.strokeStyle = '#3b82f680'
+      ctx.lineWidth = 1.5
+      ctx.moveTo(robotTrail[0].x, robotTrail[0].y)
+      for (let i = 1; i < robotTrail.length; i++) ctx.lineTo(robotTrail[i].x, robotTrail[i].y)
+      ctx.stroke()
+    }
+
+    if (simTrajectory.length > 1) {
+      ctx.beginPath()
+      ctx.strokeStyle = '#22c55e40'
+      ctx.lineWidth = 1
+      ctx.setLineDash([4, 4])
+      const startX = 200, startY = 150
+      ctx.moveTo(startX, startY)
+      for (let i = 0; i < simTrajectory.length; i++) {
+        const pt = simTrajectory[i]
+        const px = startX + (pt.left_vel + pt.right_vel) * 50 * pt.t
+        const py = startY + (pt.left_vel - pt.right_vel) * 20 * pt.t
+        ctx.lineTo(px, py)
+      }
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+
+    ctx.save()
+    ctx.translate(robotPos.x, robotPos.y)
+    ctx.rotate(robotAngle)
+
+    const rw = 20, rh = 15
+    const statusColor = status === 'connected' ? '#3b82f6' : '#64748b'
+    ctx.fillStyle = statusColor
+    ctx.fillRect(-rw / 2, -rh / 2, rw, rh)
+    ctx.strokeStyle = '#e2e8f0'
+    ctx.lineWidth = 1
+    ctx.strokeRect(-rw / 2, -rh / 2, rw, rh)
+
+    ctx.fillStyle = '#1e293b'
+    const wheelW = 4, wheelH = 3
+    ctx.fillRect(-rw / 2 - 1, -rh / 2 - 1, wheelW, wheelH)
+    ctx.fillRect(rw / 2 - wheelW + 1, -rh / 2 - 1, wheelW, wheelH)
+    ctx.fillRect(-rw / 2 - 1, rh / 2 - wheelH + 1, wheelW, wheelH)
+    ctx.fillRect(rw / 2 - wheelW + 1, rh / 2 - wheelH + 1, wheelW, wheelH)
+
+    ctx.beginPath()
+    ctx.strokeStyle = '#06b6d4'
+    ctx.lineWidth = 1.5
+    ctx.moveTo(rw / 2, 0)
+    ctx.lineTo(rw / 2 + 25, 0)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(rw / 2 + 20, -5)
+    ctx.lineTo(rw / 2 + 25, 0)
+    ctx.lineTo(rw / 2 + 20, 5)
+    ctx.strokeStyle = '#06b6d480'
+    ctx.stroke()
+
+    ctx.restore()
+  }, [robotPos, robotAngle, robotTrail, obstacles, simTrajectory, status])
+
+  useEffect(() => {
+    drawCanvas()
+  }, [drawCanvas])
+
+  // ── Keyboard controls ──
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!simPanelFocused) return
+      const key = e.key.toLowerCase()
+      const step = 5
+      const turnStep = 0.15
+
+      if (['w', 's', 'a', 'd', ' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
+        e.preventDefault()
+      }
+
+      if (mode === 'serial' && status === 'connected') {
+        const cmdMap: Record<string, string> = {
+          'w': 'FORWARD', 'arrowup': 'FORWARD',
+          's': 'REVERSE', 'arrowdown': 'REVERSE',
+          'a': 'LEFT', 'arrowleft': 'LEFT',
+          'd': 'RIGHT', 'arrowright': 'RIGHT',
+          ' ': 'STOP',
+        }
+        const cmd = cmdMap[key]
+        if (cmd) sendCommand(cmd)
+      }
+
+      setRobotPos(prev => {
+        let nx = prev.x, ny = prev.y
+        if (key === 'w' || key === 'arrowup') {
+          nx += Math.cos(robotAngle) * step
+          ny += Math.sin(robotAngle) * step
+        } else if (key === 's' || key === 'arrowdown') {
+          nx -= Math.cos(robotAngle) * step
+          ny -= Math.sin(robotAngle) * step
+        }
+        nx = Math.max(10, Math.min(390, nx))
+        ny = Math.max(10, Math.min(290, ny))
+        if (nx !== prev.x || ny !== prev.y) {
+          setRobotTrail(t => [...t.slice(-200), { x: nx, y: ny }])
+        }
+        return { x: nx, y: ny }
+      })
+      if (key === 'a' || key === 'arrowleft') {
+        setRobotAngle(a => a - turnStep)
+      } else if (key === 'd' || key === 'arrowright') {
+        setRobotAngle(a => a + turnStep)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [simPanelFocused, status, mode, robotAngle, sendCommand])
+
+  // ── Simulation handlers ──
+  const runSimulation = useCallback(async () => {
+    setSimRunning(true)
+    setComparison([])
+    setMismatchAlert('')
+    try {
+      const res = await fetch(`/api/projects/${pid}/simulator/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          wheel_radius: simParams.wheel_radius,
+          chassis_length: simParams.chassis_length,
+          chassis_width: simParams.chassis_width,
+          motor_torque: simParams.motor_torque,
+          kp: simParams.kp,
+          target_dist: simParams.target_distance,
+          n_steps: 500,
+          dt: 0.002,
+        }),
+      })
+      const data = await res.json()
+      const traj: any[] = data.trajectory || []
+      setSimTrajectory(traj)
+
+      if (traj.length > 0) {
+        let i = 0
+        const startX = 200, startY = 150
+        const animate = () => {
+          if (i >= traj.length) { return }
+          const pt = traj[i]
+          const px = startX + (pt.left_vel + pt.right_vel) * 50 * pt.t
+          const py = startY + (pt.left_vel - pt.right_vel) * 20 * pt.t
+          setRobotPos({ x: Math.max(10, Math.min(390, px)), y: Math.max(10, Math.min(290, py)) })
+          setRobotTrail(t => [...t.slice(-200), { x: px, y: py }])
+          i += 5
+          animFrameRef.current = requestAnimationFrame(animate)
+        }
+        animate()
+      }
+    } catch {
+      setSimRunning(false)
+    }
+  }, [pid, simParams])
+
+  const handleParamChange = (key: string, value: number) => {
+    setSimParams(p => ({ ...p, [key]: value }))
+  }
+
+  const resyncFromOnshape = useCallback(async () => {
+    setResyncing(true)
+    setResyncMsg('')
+    try {
+      const res = await fetch(`/api/projects/${pid}/simulator/update-from-onshape`, { method: 'POST' })
+      const data = await res.json()
+      if (data.params) {
+        const changes: string[] = []
+        for (const [k, v] of Object.entries(data.params) as [string, number][]) {
+          if (k in simParams && simParams[k as keyof typeof simParams] !== v) {
+            changes.push(`${k} changed from ${simParams[k as keyof typeof simParams]} to ${v}`)
+          }
+        }
+        setSimParams(p => ({ ...p, ...data.params }))
+        setResyncMsg(changes.length > 0 ? `Updated: ${changes.join(', ')}` : 'Parameters already up to date')
+        if (changes.length > 0) {
+          // Re-run sim with new params after short delay
+          setTimeout(() => runSimulation(), 500)
+        }
+      } else {
+        setResyncMsg('No parameters returned from Onshape')
+      }
+      setTimeout(() => setResyncMsg(''), 8000)
+    } catch {
+      setResyncMsg('Failed to resync from Onshape')
+      setTimeout(() => setResyncMsg(''), 5000)
+    }
+    setResyncing(false)
+  }, [pid, simParams, runSimulation])
+
+  useEffect(() => {
+    return () => { if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current) }
+  }, [])
+
   const signalCount = Object.keys(signals).length
   const anomalyCount = anomalies.length
+
+  const compareStatusColor = (s: string) =>
+    s === 'match' ? 'bg-green-500/20 text-green-400' :
+    s === 'deviation' ? 'bg-yellow-500/20 text-yellow-400' :
+    'bg-red-500/20 text-red-400'
+
+  const compareStatusIcon = (s: string) =>
+    s === 'match' ? '\u2713 MATCH' :
+    s === 'deviation' ? '\u26A0 DEVIATION' :
+    '\u26A0 MISMATCH'
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -227,6 +533,21 @@ export default function LiveBenchTab() {
           <span>New code deployed! Reconnect to see the fix.</span>
           <button onClick={() => { disconnect(); setTimeout(connect, 500) }}
             className="bg-white/20 hover:bg-white/30 px-2 py-0.5 rounded text-[10px]">Reconnect</button>
+        </div>
+      )}
+
+      {/* Mismatch alert banner */}
+      {mismatchAlert && (
+        <div className="bg-red-600/20 border-b border-red-500/30 text-red-400 text-xs font-mono px-4 py-2 flex items-center gap-2">
+          <AlertTriangle size={14} className="shrink-0" />
+          <span>{mismatchAlert}</span>
+        </div>
+      )}
+
+      {/* Resync result banner */}
+      {resyncMsg && (
+        <div className="bg-solus-accent/20 text-solus-accent-bright text-xs font-mono px-4 py-1.5">
+          {resyncMsg}
         </div>
       )}
 
@@ -350,95 +671,225 @@ export default function LiveBenchTab() {
         </div>
       )}
 
-      {/* Main area */}
+      {/* Main area — two panels */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Signal grid */}
-        <div className="flex-1 overflow-y-auto p-3">
-          <div className="grid grid-cols-2 xl:grid-cols-3 gap-2">
-            {Object.entries(signals).map(([name, sig]) => {
-              const color = signalColor(name, sig.current)
-              const chartData = sig.history.map((v, i) => ({ i, v }))
-              return (
-                <div key={name} className="bg-solus-elevated border border-solus-border rounded-lg p-3">
-                  <div className="text-[10px] font-mono uppercase tracking-widest text-solus-text-muted mb-1">
-                    {name.replace(/_/g, ' ')}
-                  </div>
-                  <div className="text-xl font-mono font-bold tabular-nums" style={{ color }}>
-                    {signalDisplay(name, sig.current)}
-                  </div>
-                  {chartData.length > 1 && (
-                    <div className="mt-1.5 h-9">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={chartData}>
-                          <Line type="monotone" dataKey="v" stroke={color} dot={false} strokeWidth={1.5} isAnimationActive={false} />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                  )}
-                  <div className="text-[10px] font-mono text-solus-text-muted mt-1">
-                    min {sig.min.toFixed(2)} · max {sig.max.toFixed(2)}
-                  </div>
-                </div>
-              )
-            })}
-            {signalCount === 0 && (
-              <div className="col-span-full text-xs font-mono text-solus-text-muted py-12 text-center">
-                {status === 'connected' ? 'Waiting for signals...' : 'Connect to start receiving telemetry'}
-              </div>
+
+        {/* LEFT: SIMULATION */}
+        <div
+          ref={simPanelRef}
+          className={`flex-1 border-r border-solus-border overflow-y-auto p-3 focus:outline-none ${simPanelFocused ? 'ring-1 ring-solus-accent/30' : ''}`}
+          tabIndex={0}
+          onFocus={() => setSimPanelFocused(true)}
+          onBlur={() => setSimPanelFocused(false)}
+        >
+          <div className="flex items-center gap-2 mb-2">
+            <Activity size={12} className="text-solus-accent-bright" />
+            <span className="text-[10px] font-mono font-semibold uppercase tracking-widest text-solus-text-muted">Simulation</span>
+            {simPanelFocused && (
+              <span className="text-[9px] font-mono text-solus-text-muted ml-auto">WASD to drive</span>
             )}
           </div>
+
+          {/* Canvas */}
+          <canvas
+            ref={canvasRef}
+            width={400}
+            height={300}
+            className="w-full max-w-[400px] bg-solus-bg border border-solus-border rounded"
+          />
+
+          {/* Sim Parameters */}
+          <div className="mt-3">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] font-mono font-semibold uppercase tracking-widest text-solus-text-muted">Sim Parameters</span>
+              <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
+                paramsSource === 'onshape' ? 'bg-solus-accent/15 text-solus-accent-bright' : 'bg-solus-text-muted/15 text-solus-text-muted'
+              }`}>
+                {paramsSource === 'onshape' ? 'From Onshape' : 'Manual'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {SIM_PARAM_DEFS.map(({ key, label, step, unit }) => (
+                <div key={key} className="flex items-center gap-1.5">
+                  <label className="text-[9px] font-mono text-solus-text-muted w-24 shrink-0">{label}</label>
+                  <input
+                    type="number"
+                    step={step}
+                    value={simParams[key as keyof typeof simParams]}
+                    onChange={e => handleParamChange(key, parseFloat(e.target.value) || 0)}
+                    className="bg-solus-bg border border-solus-border rounded px-1.5 py-0.5 text-[10px] font-mono text-solus-text w-20"
+                  />
+                  <span className="text-[9px] font-mono text-solus-text-muted">{unit}</span>
+                </div>
+              ))}
+              {/* kp and target_distance */}
+              <div className="flex items-center gap-1.5">
+                <label className="text-[9px] font-mono text-solus-text-muted w-24 shrink-0">Kp</label>
+                <input
+                  type="number" step="0.1"
+                  value={simParams.kp}
+                  onChange={e => handleParamChange('kp', parseFloat(e.target.value) || 0)}
+                  className="bg-solus-bg border border-solus-border rounded px-1.5 py-0.5 text-[10px] font-mono text-solus-text w-20"
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <label className="text-[9px] font-mono text-solus-text-muted w-24 shrink-0">Target Dist</label>
+                <input
+                  type="number" step="0.01"
+                  value={simParams.target_distance}
+                  onChange={e => handleParamChange('target_distance', parseFloat(e.target.value) || 0)}
+                  className="bg-solus-bg border border-solus-border rounded px-1.5 py-0.5 text-[10px] font-mono text-solus-text w-20"
+                />
+                <span className="text-[9px] font-mono text-solus-text-muted">m</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Sim buttons */}
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
+            <button
+              onClick={runSimulation}
+              disabled={simRunning}
+              className="flex items-center gap-1 bg-solus-accent/20 hover:bg-solus-accent/30 text-solus-accent-bright text-[10px] font-mono px-3 py-1.5 rounded transition-colors disabled:opacity-40"
+            >
+              <Play size={10} /> {simRunning ? 'Running...' : 'Run Simulation'}
+            </button>
+            <button
+              onClick={resyncFromOnshape}
+              disabled={resyncing}
+              className="flex items-center gap-1 bg-solus-warning/20 hover:bg-solus-warning/30 text-solus-warning text-[10px] font-mono px-3 py-1.5 rounded transition-colors disabled:opacity-40"
+            >
+              <Download size={10} /> {resyncing ? 'Resyncing...' : 'Resync from Onshape'}
+            </button>
+          </div>
+
+          {/* SIM vs REAL comparison table */}
+          {comparison.length > 0 && (
+            <div className="mt-3">
+              <span className="text-[10px] font-mono font-semibold uppercase tracking-widest text-solus-text-muted">SIM vs REAL</span>
+              <table className="w-full mt-1 text-[10px] font-mono">
+                <thead>
+                  <tr className="text-solus-text-muted border-b border-solus-border">
+                    <th className="text-left py-1 pr-2">Signal</th>
+                    <th className="text-right py-1 pr-2">Simulated</th>
+                    <th className="text-right py-1 pr-2">Real</th>
+                    <th className="text-right py-1 pr-2">Delta</th>
+                    <th className="text-left py-1">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {comparison.map((d) => (
+                    <tr key={d.signal} className="border-b border-solus-border/30">
+                      <td className="py-1 pr-2 text-solus-text">{d.signal}</td>
+                      <td className="py-1 pr-2 text-right text-solus-text-muted">{d.simulated?.toFixed(4)}</td>
+                      <td className="py-1 pr-2 text-right text-solus-text-muted">{d.observed?.toFixed(4)}</td>
+                      <td className="py-1 pr-2 text-right text-solus-text-muted">{d.delta?.toFixed(4)}</td>
+                      <td className="py-1">
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${compareStatusColor(d.status)}`}>
+                          {compareStatusIcon(d.status)}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
-        {/* Anomaly sidebar */}
-        <div className="w-72 border-l border-solus-border bg-solus-surface flex flex-col">
-          <div className="p-3 border-b border-solus-border flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-mono font-semibold uppercase tracking-widest text-solus-text-muted">Anomalies</span>
-              {anomalyCount > 0 && (
-                <span className="bg-solus-error text-white rounded-full px-2 text-[10px] font-mono font-bold min-w-[20px] text-center">
-                  {anomalyCount}
-                </span>
+        {/* RIGHT: TELEMETRY */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* Signal grid */}
+          <div className="flex-1 overflow-y-auto p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] font-mono font-semibold uppercase tracking-widest text-solus-text-muted">Telemetry</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {Object.entries(signals).map(([name, sig]) => {
+                const color = signalColor(name, sig.current)
+                const chartData = sig.history.map((v, i) => ({ i, v }))
+                return (
+                  <div key={name} className="bg-solus-elevated border border-solus-border rounded-lg p-3">
+                    <div className="text-[10px] font-mono uppercase tracking-widest text-solus-text-muted mb-1">
+                      {name.replace(/_/g, ' ')}
+                    </div>
+                    <div className="text-xl font-mono font-bold tabular-nums" style={{ color }}>
+                      {signalDisplay(name, sig.current)}
+                    </div>
+                    {chartData.length > 1 && (
+                      <div className="mt-1.5 h-9">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={chartData}>
+                            <Line type="monotone" dataKey="v" stroke={color} dot={false} strokeWidth={1.5} isAnimationActive={false} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+                    <div className="text-[10px] font-mono text-solus-text-muted mt-1">
+                      min {sig.min.toFixed(2)} · max {sig.max.toFixed(2)}
+                    </div>
+                  </div>
+                )
+              })}
+              {signalCount === 0 && (
+                <div className="col-span-full text-xs font-mono text-solus-text-muted py-12 text-center">
+                  {status === 'connected' ? 'Waiting for signals...' : 'Connect to start receiving telemetry'}
+                </div>
               )}
             </div>
           </div>
 
-          <button onClick={sendLogsToAgent}
-            className="mx-3 mt-2 flex items-center justify-center gap-1.5 bg-solus-accent/15 hover:bg-solus-accent/25 text-solus-accent-bright text-[10px] font-mono py-2 rounded transition-colors">
-            <Clipboard size={11} /> Send Logs to Agent
-          </button>
-
-          <div className="flex-1 overflow-y-auto p-3 space-y-2">
-            {anomalies.map((a: any, i: number) => (
-              <div key={a.id || i} className="bg-solus-elevated border border-solus-border rounded-lg p-2.5 space-y-1">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                    a.severity === 'error' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'
-                  }`}>
-                    {(a.severity || 'warn').toUpperCase()}
+          {/* Anomaly sidebar */}
+          <div className="w-72 border-l border-solus-border bg-solus-surface flex flex-col">
+            <div className="p-3 border-b border-solus-border flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono font-semibold uppercase tracking-widest text-solus-text-muted">Anomalies</span>
+                {anomalyCount > 0 && (
+                  <span className="bg-solus-error text-white rounded-full px-2 text-[10px] font-mono font-bold min-w-[20px] text-center">
+                    {anomalyCount}
                   </span>
-                  {a.pattern_type && (
-                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-solus-accent/15 text-solus-accent-bright">
-                      {a.pattern_type.toUpperCase().replace(/_/g, '-')}
-                    </span>
-                  )}
-                </div>
-                {a.signal_name && (
-                  <div className="text-[10px] font-mono text-solus-text">{a.signal_name}</div>
-                )}
-                {a.description && (
-                  <div className="text-[10px] text-solus-text-dim leading-snug">{a.description}</div>
-                )}
-                {a.evidence && (
-                  <div className="text-[9px] font-mono text-solus-text-muted">evidence: {a.evidence}</div>
-                )}
-                {a.expected && (
-                  <div className="text-[9px] font-mono text-solus-text-muted">expected: {a.expected}</div>
                 )}
               </div>
-            ))}
-            {anomalyCount === 0 && (
-              <div className="text-[10px] font-mono text-solus-text-muted py-6 text-center">No anomalies detected</div>
-            )}
+            </div>
+
+            <button onClick={sendLogsToAgent}
+              className="mx-3 mt-2 flex items-center justify-center gap-1.5 bg-solus-accent/15 hover:bg-solus-accent/25 text-solus-accent-bright text-[10px] font-mono py-2 rounded transition-colors">
+              <Clipboard size={11} /> Send Logs to Agent
+            </button>
+
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {anomalies.map((a: any, i: number) => (
+                <div key={a.id || i} className="bg-solus-elevated border border-solus-border rounded-lg p-2.5 space-y-1">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                      a.severity === 'error' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'
+                    }`}>
+                      {(a.severity || 'warn').toUpperCase()}
+                    </span>
+                    {a.pattern_type && (
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-solus-accent/15 text-solus-accent-bright">
+                        {a.pattern_type.toUpperCase().replace(/_/g, '-')}
+                      </span>
+                    )}
+                  </div>
+                  {a.signal_name && (
+                    <div className="text-[10px] font-mono text-solus-text">{a.signal_name}</div>
+                  )}
+                  {a.description && (
+                    <div className="text-[10px] text-solus-text-dim leading-snug">{a.description}</div>
+                  )}
+                  {a.evidence && (
+                    <div className="text-[9px] font-mono text-solus-text-muted">evidence: {a.evidence}</div>
+                  )}
+                  {a.expected && (
+                    <div className="text-[9px] font-mono text-solus-text-muted">expected: {a.expected}</div>
+                  )}
+                </div>
+              ))}
+              {anomalyCount === 0 && (
+                <div className="text-[10px] font-mono text-solus-text-muted py-6 text-center">No anomalies detected</div>
+              )}
+            </div>
           </div>
         </div>
       </div>

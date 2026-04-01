@@ -24,7 +24,8 @@ class KiCadConnector:
         entities = []
         relations = []
         component_by_ref: dict[str, Entity] = {}
-        net_components: dict[str, list[str]] = {}
+        # net_name -> list of (component_ref, pin_name)
+        net_pins: dict[str, list[tuple[str, str]]] = {}
 
         sch_files = glob.glob(os.path.join(self.project_path, '**', '*.kicad_sch'), recursive=True)
 
@@ -35,7 +36,7 @@ class KiCadConnector:
             except (OSError, IOError):
                 continue
 
-            # Extract symbol blocks with Reference and Value properties
+            # ── Extract components (symbol blocks with Reference + Value) ──
             symbols = re.findall(
                 r'\(symbol\s[^)]*'
                 r'.*?\(property\s+"Reference"\s+"([^"]+)"'
@@ -68,61 +69,136 @@ class KiCadConnector:
                     "metadata": metadata,
                 })
 
-            # Extract nets
-            net_labels = re.findall(r'\((?:label|net_name)\s+"([^"]+)"', content)
-            for net_name in set(net_labels):
-                if net_name not in net_components:
-                    net_components[net_name] = []
+            # ── Extract net→component mappings ──
+            # Strategy 1: Parse net_label comments like ";; U1.D5 → U2.PWMA"
+            # These appear right after (net_label "NAME" ...) blocks
+            net_label_blocks = re.findall(
+                r'\(net_label\s+"([^"]+)"[^)]*\).*?(?=\(net_label|\(wire|\Z)',
+                content, re.DOTALL
+            )
+            for match in re.finditer(
+                r'\(net_label\s+"([^"]+)".*?\n((?:\s*;;.*\n)*)',
+                content
+            ):
+                net_name = match.group(1)
+                comment_block = match.group(2)
+                # Parse comments like ";; U1.D5 → U2.PWMA" or ";; U5.OUT → U1.A0"
+                for conn_match in re.finditer(
+                    r'(\w+)\.(\w+)\s*[→->]+\s*(\w+)\.(\w+)',
+                    comment_block
+                ):
+                    ref1, pin1 = conn_match.group(1), conn_match.group(2)
+                    ref2, pin2 = conn_match.group(3), conn_match.group(4)
+                    net_pins.setdefault(net_name, [])
+                    if ref1 in component_by_ref:
+                        entry = (ref1, pin1)
+                        if entry not in net_pins[net_name]:
+                            net_pins[net_name].append(entry)
+                    if ref2 in component_by_ref:
+                        entry = (ref2, pin2)
+                        if entry not in net_pins[net_name]:
+                            net_pins[net_name].append(entry)
 
-            # Extract pin-to-net assignments from wire/pin structures
-            # Simplified: find (net "NAME") near (pin "REF" "PIN") patterns
-            pin_nets = re.findall(
+            # Strategy 2: Parse (label "NET_NAME") patterns
+            label_names = re.findall(r'\((?:label|net_name)\s+"([^"]+)"', content)
+            for net_name in set(label_names):
+                net_pins.setdefault(net_name, [])
+
+            # Strategy 3: Parse (pin "REF" "PIN") ... (net "NAME") patterns (KiCad netlist format)
+            pin_net_matches = re.findall(
                 r'\(pin\s+"([^"]+)"\s+"([^"]+)".*?\(net\s+"([^"]+)"',
                 content, re.DOTALL
             )
-            for comp_ref, pin, net_name in pin_nets:
-                net_components.setdefault(net_name, [])
-                if comp_ref in component_by_ref and comp_ref not in net_components[net_name]:
-                    net_components[net_name].append(comp_ref)
+            for comp_ref, pin, net_name in pin_net_matches:
+                if comp_ref in component_by_ref:
+                    net_pins.setdefault(net_name, [])
+                    entry = (comp_ref, pin)
+                    if entry not in net_pins[net_name]:
+                        net_pins[net_name].append(entry)
 
-        # Create net entities and CONNECTED_TO relations
-        for net_name, comp_refs in net_components.items():
+            # Strategy 4: Parse wire comments like ";; Motor PWM: U1.D5 → U2.PWMA (MOTOR_L_PWM)"
+            for wire_match in re.finditer(
+                r';;\s*.*?(\w+)\.(\w+)\s*[→->]+\s*(\w+)\.(\w+)\s*\((\w+)\)',
+                content
+            ):
+                ref1, pin1 = wire_match.group(1), wire_match.group(2)
+                ref2, pin2 = wire_match.group(3), wire_match.group(4)
+                net_name = wire_match.group(5)
+                net_pins.setdefault(net_name, [])
+                if ref1 in component_by_ref:
+                    entry = (ref1, pin1)
+                    if entry not in net_pins[net_name]:
+                        net_pins[net_name].append(entry)
+                if ref2 in component_by_ref:
+                    entry = (ref2, pin2)
+                    if entry not in net_pins[net_name]:
+                        net_pins[net_name].append(entry)
+
+        # ── Create net (interface) entities and relations ──
+        created_pairs: set[tuple[str, str]] = set()
+
+        for net_name, pin_list in net_pins.items():
             if not net_name or net_name.startswith('unconnected'):
                 continue
+
+            # Get unique component refs on this net
+            comp_refs = list(dict.fromkeys(ref for ref, _ in pin_list))
+            if not comp_refs:
+                continue
+
+            # Create net entity
             net_ent = Entity(
                 project_id=self.project_id,
                 entity_type=EntityType.INTERFACE,
                 name=net_name,
                 source=SourceType.KICAD,
                 source_ref=f"net:{net_name}",
-                metadata={"net_type": "electrical"},
+                metadata={
+                    "net_type": "electrical",
+                    "connected_components": comp_refs,
+                    "pin_assignments": {ref: pin for ref, pin in pin_list},
+                },
             )
             entities.append(net_ent)
 
-            # Connect components sharing this net
+            # Connect each component to the net entity
             for ref in comp_refs:
                 if ref in component_by_ref:
+                    pin = next((p for r, p in pin_list if r == ref), "")
                     rel = Relation(
                         project_id=self.project_id,
                         source_entity_id=component_by_ref[ref].id,
                         target_entity_id=net_ent.id,
                         relation_type=RelationType.CONNECTED_TO,
-                        metadata={"net": net_name},
+                        metadata={"net": net_name, "pin": pin},
                     )
                     relations.append(rel)
 
-            # Also create direct CONNECTED_TO between components on same net
+            # Create direct CONNECTED_TO between all component pairs on this net
             for i in range(len(comp_refs)):
                 for j in range(i + 1, len(comp_refs)):
-                    if comp_refs[i] in component_by_ref and comp_refs[j] in component_by_ref:
-                        rel = Relation(
-                            project_id=self.project_id,
-                            source_entity_id=component_by_ref[comp_refs[i]].id,
-                            target_entity_id=component_by_ref[comp_refs[j]].id,
-                            relation_type=RelationType.CONNECTED_TO,
-                            metadata={"via_net": net_name},
-                        )
-                        relations.append(rel)
+                    ref_a, ref_b = comp_refs[i], comp_refs[j]
+                    if ref_a not in component_by_ref or ref_b not in component_by_ref:
+                        continue
+                    pair = (min(ref_a, ref_b), max(ref_a, ref_b))
+                    if pair in created_pairs:
+                        continue
+                    created_pairs.add(pair)
+
+                    pin_a = next((p for r, p in pin_list if r == ref_a), "")
+                    pin_b = next((p for r, p in pin_list if r == ref_b), "")
+
+                    rel = Relation(
+                        project_id=self.project_id,
+                        source_entity_id=component_by_ref[ref_a].id,
+                        target_entity_id=component_by_ref[ref_b].id,
+                        relation_type=RelationType.CONNECTED_TO,
+                        metadata={
+                            "via_net": net_name,
+                            "pins": f"{pin_a}\u2192{pin_b}" if pin_a and pin_b else "",
+                        },
+                    )
+                    relations.append(rel)
 
         return {"items": items, "entities": entities, "relations": relations}
 

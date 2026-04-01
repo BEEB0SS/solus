@@ -8,12 +8,19 @@ DeviceDiscovery — analyzes live telemetry signal names and value ranges to
 auto-discover connected peripherals and build graph entities.
 """
 
+import json
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', 'packages', 'shared-types', 'src'))
 from models import Entity, Relation, EntityType, RelationType, SourceType
+
+try:
+    import anthropic
+    _claude_client = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", os.environ.get("ANTHROPIC_API_KEY", "")))
+except Exception:
+    _claude_client = None
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -210,6 +217,8 @@ class CrossDomainLinker:
     def _auto_enrich_descriptions(self, project_id, entities):
         """Generate descriptions from metadata + graph connections for entities that lack one."""
         enriched = 0
+
+        # Phase 1: heuristic enrichment
         for e in entities:
             if e.description and len(e.description) > 20:
                 continue
@@ -234,7 +243,74 @@ class CrossDomainLinker:
                 self.ce.update_entity(e.id, {"description": ". ".join(parts) + "."})
                 enriched += 1
 
+        # Phase 2: Claude enrichment for entities still lacking good descriptions
+        if _claude_client:
+            try:
+                enriched += self._claude_enrich_descriptions(project_id)
+            except Exception as e:
+                print(f"[linker] Claude enrichment failed, using heuristics only: {e}")
+
         return {"enriched": enriched}
+
+    def _claude_enrich_descriptions(self, project_id) -> int:
+        """Use Claude to generate better descriptions for entities with short/missing descriptions."""
+        entities = self.ce.get_entities_by_project(project_id)
+        needs_enrichment = [e for e in entities if not e.description or len(e.description) < 30]
+
+        if not needs_enrichment:
+            return 0
+
+        # Build context for each entity
+        component_lines = []
+        for i, e in enumerate(needs_enrichment[:20], 1):  # batch max 20
+            meta = e.metadata if isinstance(e.metadata, dict) else {}
+            etype = e.entity_type.value
+            connected = self._get_connected_names(e.id, limit=5)
+            conn_str = f", connected to: {', '.join(connected)}" if connected else ""
+            value = meta.get("value", "")
+            category = meta.get("component_category", "")
+            material = meta.get("material", "")
+
+            detail = f"{etype}"
+            if category:
+                detail += f", {category}"
+            if value:
+                detail += f", value={value}"
+            if material:
+                detail += f", material={material}"
+
+            component_lines.append(f"{i}. {e.name} ({detail}{conn_str})")
+
+        prompt = (
+            "Given these components from a robot's KiCad schematic and code repository, "
+            "write a 1-2 sentence technical description for each. Include what it does, "
+            "how it connects to the system, and any relevant specs.\n\n"
+            "Components:\n" + "\n".join(component_lines) + "\n\n"
+            "Return as JSON only, no markdown: {\"component_name\": \"description\", ...}"
+        )
+
+        response = _claude_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        text = response.content[0].text.strip()
+        # Strip markdown code fences if present
+        if text.startswith("```"):
+            text = re.sub(r'^```\w*\n?', '', text)
+            text = re.sub(r'\n?```$', '', text)
+
+        descriptions = json.loads(text)
+        enriched = 0
+
+        for e in needs_enrichment[:20]:
+            desc = descriptions.get(e.name)
+            if desc and len(desc) > len(e.description or ""):
+                self.ce.update_entity(e.id, {"description": desc})
+                enriched += 1
+
+        return enriched
 
     # ── Description helpers ───────────────────────────────────────────
 

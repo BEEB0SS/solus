@@ -162,6 +162,72 @@ class MuJoCoSimulator:
             "params_used": dict(self.params),
         }
 
+    def step_manual(self, left_motor: float, right_motor: float, n_steps: int = 10) -> dict:
+        """Step the simulation with manual motor inputs. Returns current state."""
+        if not self.available or self.model is None:
+            # Kinematic fallback
+            if not hasattr(self, '_manual_state'):
+                self._manual_state = {"x": 0.0, "y": 0.0, "theta": 0.0, "trail": []}
+
+            s = self._manual_state
+            dt = 0.05
+            wheel_radius = self.params.get("wheel_radius", 0.033)
+            wheel_sep = self.params.get("wheel_separation", 0.15)
+
+            for _ in range(n_steps):
+                v = wheel_radius * (left_motor + right_motor) / 2
+                omega = wheel_radius * (right_motor - left_motor) / wheel_sep
+                s["x"] += v * math.cos(s["theta"]) * dt
+                s["y"] += v * math.sin(s["theta"]) * dt
+                s["theta"] += omega * dt
+
+            s["trail"].append({"x": s["x"], "y": s["y"]})
+            if len(s["trail"]) > 200:
+                s["trail"] = s["trail"][-200:]
+
+            return {
+                "x": s["x"], "y": s["y"], "theta": s["theta"],
+                "trail": s["trail"],
+                "left_motor": left_motor, "right_motor": right_motor,
+            }
+
+        # MuJoCo version
+        if self.data is not None:
+            self.data.ctrl[0] = left_motor * self.params.get("motor_torque", 1.0)
+            self.data.ctrl[1] = right_motor * self.params.get("motor_torque", 1.0)
+            for _ in range(n_steps):
+                mujoco.mj_step(self.model, self.data)
+
+            return {
+                "x": float(self.data.qpos[0]),
+                "y": float(self.data.qpos[1]),
+                "theta": float(self.data.qpos[2]) if len(self.data.qpos) > 2 else 0,
+                "left_motor": left_motor,
+                "right_motor": right_motor,
+                "sensor_data": {f"sensor_{i}": float(self.data.sensordata[i]) for i in range(len(self.data.sensordata))},
+            }
+
+        return {"x": 0, "y": 0, "theta": 0, "left_motor": left_motor, "right_motor": right_motor}
+
+    def reset_manual(self):
+        """Reset manual control state."""
+        self._manual_state = {"x": 0.0, "y": 0.0, "theta": 0.0, "trail": []}
+        if self.available and self.data is not None:
+            mujoco.mj_resetData(self.model, self.data)
+        return {"reset": True}
+
+    def load_from_onshape_stl(self, stl_data: bytes, part_name: str) -> str:
+        """Load an STL mesh into the MuJoCo model as a geom."""
+        import tempfile
+        import os
+        stl_path = os.path.join(tempfile.gettempdir(), f"solus_{part_name}.stl")
+        with open(stl_path, 'wb') as f:
+            f.write(stl_data)
+        if not hasattr(self, '_mesh_paths'):
+            self._mesh_paths = {}
+        self._mesh_paths[part_name] = stl_path
+        return stl_path
+
     def compare_with_telemetry(self, sim_result: dict, live_state: dict) -> list[dict]:
         comparisons = []
         final = sim_result.get("final_state", {})

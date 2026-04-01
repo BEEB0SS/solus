@@ -117,6 +117,14 @@ class OnshapeConnector:
                     "volume": body.get("volume", [0])[0] if isinstance(body.get("volume"), list) else body.get("volume"),
                 }
 
+        # Try to get bounding boxes for dimension info
+        bbox_data = self._get(f"/partstudios/d/{self.did}/w/{self.wid}/e/{eid}/boundingboxes")
+        bbox_by_part: dict[str, dict] = {}
+        if bbox_data and isinstance(bbox_data, dict):
+            for pid, box in bbox_data.items():
+                if isinstance(box, dict):
+                    bbox_by_part[pid] = box
+
         for part in parts:
             part_id = part.get("partId", "")
             name = part.get("name", "Unnamed Part")
@@ -126,6 +134,21 @@ class OnshapeConnector:
             metadata = {"partId": part_id, "elementId": eid, "material": mat_name}
             if part_id in mass_by_part:
                 metadata.update(mass_by_part[part_id])
+
+            # Compute bounding box dimensions if available
+            dims_mm = None
+            if part_id in bbox_by_part:
+                box = bbox_by_part[part_id]
+                lx = abs(box.get("maxX", 0) - box.get("minX", 0)) * 1000
+                ly = abs(box.get("maxY", 0) - box.get("minY", 0)) * 1000
+                lz = abs(box.get("maxZ", 0) - box.get("minZ", 0)) * 1000
+                dims_mm = sorted([lx, ly, lz], reverse=True)
+                metadata["dimensions_mm"] = {"x": round(lx, 1), "y": round(ly, 1), "z": round(lz, 1)}
+
+            # Improve generic part names
+            if re.match(r'^Part\s*\d*$', name, re.IGNORECASE):
+                name = self._improve_part_name(name, mat_name, dims_mm, studio_name)
+                metadata["original_name"] = part.get("name", "")
 
             ent = Entity(
                 project_id=self.project_id,
@@ -208,6 +231,53 @@ class OnshapeConnector:
                         metadata={"joint_type": joint_type},
                     )
                     relations.append(rel)
+
+    @staticmethod
+    def _improve_part_name(name: str, material: str, dims_mm: list[float] | None,
+                           studio_name: str) -> str:
+        """Improve generic 'Part N' names using dimensions, material, and studio context."""
+        suffix_parts = []
+
+        # Add dimensions if available
+        if dims_mm and all(d > 0.1 for d in dims_mm):
+            dim_str = "\u00d7".join(f"{d:.0f}" for d in dims_mm)
+            suffix_parts.append(f"{dim_str}mm")
+
+        # Classify by shape from dimensions
+        classification = ""
+        if dims_mm and all(d > 0.1 for d in dims_mm):
+            largest, middle, smallest = dims_mm
+            if smallest > 0:
+                flat_ratio = largest / smallest
+                aspect = largest / middle if middle > 0 else 1
+                if flat_ratio > 8 and aspect < 3:
+                    classification = "Plate"
+                elif flat_ratio > 5:
+                    classification = "Chassis"
+                elif aspect > 4:
+                    classification = "Shaft"
+                elif 2.5 < aspect < 5 and middle / smallest < 2:
+                    classification = "Wheel"
+                elif largest < 20:
+                    classification = "Bracket"
+                elif largest < 40:
+                    classification = "Mount"
+
+        # Add material hint
+        if material:
+            suffix_parts.append(material)
+
+        # Build improved name
+        if classification:
+            base = f"{classification}"
+        elif studio_name and studio_name.lower() not in ("part studio", "parts"):
+            base = studio_name
+        else:
+            base = name
+
+        if suffix_parts:
+            return f"{base} ({', '.join(suffix_parts)})"
+        return base
 
     def get_assembly_structure(self) -> dict:
         elements = self._get(f"/documents/d/{self.did}/w/{self.wid}/elements")

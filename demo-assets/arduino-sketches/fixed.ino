@@ -43,6 +43,10 @@ void handleCommands() {
   if (cmd == "START") robotRunning = true;
   else if (cmd == "STOP") { robotRunning = false; driveMotors(0,0); leftPWM=0; rightPWM=0; pidError=0; pidLastError=0; }
   else if (cmd == "SWEEP") { headServo.write(0); delay(300); headServo.write(180); delay(300); headServo.write(90); }
+  else if (cmd == "FORWARD") { leftPWM=150; rightPWM=150; driveMotors(150, 150); }
+  else if (cmd == "REVERSE") { leftPWM=-150; rightPWM=-150; driveMotors(-150, -150); }
+  else if (cmd == "LEFT") { leftPWM=-100; rightPWM=100; driveMotors(-100, 100); }
+  else if (cmd == "RIGHT") { leftPWM=100; rightPWM=-100; driveMotors(100, -100); }
 }
 void loop() {
   handleCommands();

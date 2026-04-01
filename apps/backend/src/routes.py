@@ -409,10 +409,14 @@ async def sync_source(project_id: str, source_id: str):
             if e.source_ref:
                 existing_by_ref[e.source_ref] = e
 
+        # Map connector entity IDs to actual DB entity IDs (for relation remapping)
+        id_remap: dict[str, str] = {}
+
         for ent in ingested.get("entities", []):
             if ent.source_ref and ent.source_ref in existing_by_ref:
                 # Update existing entity
                 old = existing_by_ref[ent.source_ref]
+                id_remap[ent.id] = old.id
                 context_engine.update_entity(old.id, {
                     "name": ent.name,
                     "description": ent.description,
@@ -420,12 +424,23 @@ async def sync_source(project_id: str, source_id: str):
                 })
                 entities_updated += 1
             else:
+                id_remap[ent.id] = ent.id
                 context_engine.create_entity(ent)
                 entities_created += 1
 
-        # 7. Create relations
+        # 7. Create relations (remap IDs and skip duplicates)
+        existing_rel_pairs = set()
+        for r in context_engine.get_relations_by_project(project_id):
+            existing_rel_pairs.add((r.source_entity_id, r.target_entity_id, r.relation_type.value))
+
         for rel in ingested.get("relations", []):
-            context_engine.create_relation(rel)
+            rel.source_entity_id = id_remap.get(rel.source_entity_id, rel.source_entity_id)
+            rel.target_entity_id = id_remap.get(rel.target_entity_id, rel.target_entity_id)
+            key = (rel.source_entity_id, rel.target_entity_id,
+                   rel.relation_type.value if hasattr(rel.relation_type, 'value') else rel.relation_type)
+            if key not in existing_rel_pairs:
+                context_engine.create_relation(rel)
+                existing_rel_pairs.add(key)
 
         # 8. Log change events from diffs
         for diff in diffs:
@@ -917,12 +932,123 @@ async def run_simulation(project_id: str, body: SimRunRequest):
     return result
 
 
+@router.post("/api/projects/{project_id}/simulator/manual")
+async def sim_manual_control(project_id: str, req: dict):
+    """Manual control input for simulator. Updates sim state."""
+    if not simulator:
+        raise HTTPException(503, "Simulator unavailable")
+    command = req.get("command", "")
+    motor_map = {
+        "FORWARD": (0.5, 0.5),
+        "REVERSE": (-0.5, -0.5),
+        "LEFT": (-0.3, 0.3),
+        "RIGHT": (0.3, -0.3),
+        "STOP": (0.0, 0.0),
+    }
+    left, right = motor_map.get(command.upper(), (0.0, 0.0))
+    result = simulator.step_manual(left, right)
+    return result
+
+
+@router.post("/api/projects/{project_id}/simulator/reset")
+async def sim_reset(project_id: str):
+    if simulator:
+        simulator.reset_manual()
+    return {"reset": True}
+
+
 @router.post("/api/projects/{project_id}/simulator/update-from-onshape")
 async def update_sim_from_onshape(project_id: str, body: dict):
     if not simulator:
         raise HTTPException(503, "Simulator unavailable")
-    simulator.update_from_onshape(body)
-    return {"updated": True, "params": simulator.params}
+
+    # If body has explicit parts/dimensions, use them directly
+    if body.get("parts"):
+        simulator.update_from_onshape(body)
+        return {"updated": True, "params": simulator.params}
+
+    # Otherwise, fetch from the project's Onshape source
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM source_connections WHERE project_id=? AND source_type='onshape'",
+        (project_id,),
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        raise HTTPException(404, "No Onshape source configured for this project")
+
+    source = dict(rows[0])
+    config = json.loads(source.get("config", "{}"))
+    doc_id = config.get("document_id") or config.get("url", "")
+
+    from .connectors.onshape import OnshapeConnector
+    connector = OnshapeConnector(
+        doc_id,
+        config.get("workspace_id", ""),
+        project_id,
+        os.environ.get("ONSHAPE_ACCESS_KEY", ""),
+        os.environ.get("ONSHAPE_SECRET_KEY", ""),
+    )
+
+    # Get assembly structure for part dimensions
+    asm = connector.get_assembly_structure()
+    parts_data = []
+    if asm:
+        instances = asm.get("rootAssembly", {}).get("instances", [])
+        for inst in instances:
+            parts_data.append({
+                "name": inst.get("name", ""),
+                "partId": inst.get("partId", ""),
+            })
+
+    # Get parts with bounding boxes for dimension estimates
+    raw_parts = connector.get_parts()
+
+    # Try to download STL for key parts (chassis, wheels)
+    stl_parts = []
+    for part in raw_parts:
+        name_lower = part.get("name", "").lower()
+        if any(k in name_lower for k in ("chassis", "wheel", "body", "frame")):
+            eid = part.get("elementId", "")
+            pid = part.get("partId", "")
+            if eid and pid and connector.ak and connector.sk:
+                stl_url = f"/parts/d/{connector.did}/w/{connector.wid}/e/{eid}/partid/{pid}/stl"
+                try:
+                    import requests
+                    resp = requests.get(
+                        f"https://cad.onshape.com/api/v6{stl_url}",
+                        auth=(connector.ak, connector.sk),
+                        headers={"Accept": "application/octet-stream"},
+                        timeout=30,
+                    )
+                    if resp.status_code == 200 and len(resp.content) > 100:
+                        stl_path = simulator.load_from_onshape_stl(resp.content, part["name"])
+                        stl_parts.append({"name": part["name"], "stl_path": stl_path})
+                except Exception as e:
+                    print(f"[routes] STL download failed for {part['name']}: {e}")
+
+    # Build params from part names using bounding box heuristics
+    onshape_body = {"parts": []}
+    for part in raw_parts:
+        name_lower = part.get("name", "").lower()
+        entry = {"name": part.get("name", ""), "dimensions": {}}
+        # Use default dimensions as estimates — real dims come from mass properties
+        if "wheel" in name_lower:
+            entry["dimensions"] = {"diameter": 0.066, "width": 0.026}
+        elif "chassis" in name_lower or "body" in name_lower or "frame" in name_lower:
+            entry["dimensions"] = {"length": 0.20, "width": 0.15, "height": 0.05}
+        onshape_body["parts"].append(entry)
+
+    simulator.update_from_onshape(onshape_body)
+
+    return {
+        "updated": True,
+        "params": simulator.params,
+        "parts_found": len(raw_parts),
+        "stl_loaded": [s["name"] for s in stl_parts],
+        "assembly_instances": len(parts_data),
+    }
 
 
 @router.get("/api/projects/{project_id}/simulator/state")
