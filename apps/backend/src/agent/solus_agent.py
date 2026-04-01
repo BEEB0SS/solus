@@ -1,11 +1,13 @@
 """
-Solus AI Agent — Gemini-powered robotics debugging assistant.
+Solus AI Agent — Claude-powered robotics debugging assistant.
 Routes queries to specialized handlers with full system context.
 """
 
 import json
 import os
 import sys
+
+import anthropic
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'packages', 'shared-types', 'src'))
 from models import AgentQuery, AgentResponse, _uid, _now
@@ -17,13 +19,15 @@ class SolusAgent:
         self.context_engine = context_engine
         self.memory_store = memory_store
 
-        import google.generativeai as genai
-        api_key = os.environ.get("GEMINI_API_KEY")
+        api_key = os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
         if api_key:
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel("gemini-2.0-flash")
+            self.client = anthropic.Anthropic(api_key=api_key)
+            self.model = "claude-sonnet-4-5-20250929"
+            self.available = True
         else:
+            self.client = None
             self.model = None
+            self.available = False
 
     async def query(self, agent_query: AgentQuery) -> AgentResponse:
         try:
@@ -76,7 +80,7 @@ class SolusAgent:
 
         changes_str = json.dumps(recent_changes, indent=2, default=str) if recent_changes else "No recent changes."
 
-        prompt = f"""System: You are Solus, a robotics debugging assistant with access to the robot's full system context: source code, electronic schematic, mechanical design, and live telemetry data.
+        system_prompt = """You are Solus, a robotics debugging assistant with access to the robot's full system context: source code, electronic schematic, mechanical design, and live telemetry data.
 
 When diagnosing:
 1. LIKELY CAUSE — name the specific component, parameter, variable, and file. Be precise.
@@ -84,9 +88,9 @@ When diagnosing:
 3. SUGGESTED FIX — specific values with engineering reasoning.
 4. CORRECTED CODE — complete, compilable Arduino sketch. Not a snippet. The full file.
 
-Reference specific: file names, component designators (U1, U2), signal names from telemetry, datasheet specs. Be concise. Engineers read this.
+Reference specific: file names, component designators (U1, U2), signal names from telemetry, datasheet specs. Be concise. Engineers read this."""
 
-ROBOT SYSTEM GRAPH:
+        user_prompt = f"""ROBOT SYSTEM GRAPH:
 {subgraph_str}
 
 SOURCE CODE FILES:
@@ -103,7 +107,7 @@ SIMILAR PAST ISSUES:
 
 User query: {q.query}"""
 
-        response_text = await self._call_gemini(prompt)
+        response_text = self._call_llm(system_prompt, user_prompt)
 
         return AgentResponse(
             query_id=q.id,
@@ -134,19 +138,18 @@ User query: {q.query}"""
 
         subgraph_str = json.dumps(subgraph, indent=2, default=str)[:3000] if subgraph else "No system graph."
 
-        prompt = f"""Given this robot system, recommend a component for: {q.query}
+        system_prompt = "You are Solus, a robotics parts recommendation assistant. Check voltage compatibility with existing rails, pin availability on the MCU, protocol compatibility. Return: part name, manufacturer, key specs, WHY it's compatible with this specific system, wiring instructions, any supporting resistors/caps needed."
+
+        user_prompt = f"""Given this robot system, recommend a component for: {q.query}
 
 ROBOT SYSTEM GRAPH:
 {subgraph_str}
 
 EXISTING VOLTAGE RAILS: {', '.join(voltage_rails) if voltage_rails else 'Unknown — check schematic'}
 AVAILABLE MCU PINS: {', '.join(mcu_pins) if mcu_pins else 'Unknown — check schematic'}
-COMMUNICATION BUSES: {', '.join(buses) if buses else 'Unknown — check schematic'}
+COMMUNICATION BUSES: {', '.join(buses) if buses else 'Unknown — check schematic'}"""
 
-Check voltage compatibility with existing rails, pin availability on the MCU, protocol compatibility.
-Return: part name, manufacturer, key specs, WHY it's compatible with this specific system, wiring instructions, any supporting resistors/caps needed."""
-
-        response_text = await self._call_gemini(prompt)
+        response_text = self._call_llm(system_prompt, user_prompt)
 
         return AgentResponse(
             query_id=q.id,
@@ -161,7 +164,9 @@ Return: part name, manufacturer, key specs, WHY it's compatible with this specif
         for filename, content in ctx["source_code"].items():
             source_str += f"--- {filename} ---\n{content}\n\n"
 
-        prompt = f"""Extract the requested parameter values from the provided context. For each value, state: the value, the unit, confidence level (high/medium/low/uncertain), and the source. NEVER fabricate values. If uncertain, say so explicitly.
+        system_prompt = "You are Solus, a robotics parameter extraction assistant. For each value, state: the value, the unit, confidence level (high/medium/low/uncertain), and the source. NEVER fabricate values. If uncertain, say so explicitly."
+
+        user_prompt = f"""Extract the requested parameter values from the provided context.
 
 SYSTEM CONTEXT:
 {subgraph_str}
@@ -171,7 +176,7 @@ SOURCE CODE:
 
 Request: {q.query}"""
 
-        response_text = await self._call_gemini(prompt)
+        response_text = self._call_llm(system_prompt, user_prompt)
 
         return AgentResponse(
             query_id=q.id,
@@ -191,18 +196,18 @@ Request: {q.query}"""
         ctx = self._build_context(q)
         subgraph_str = json.dumps(ctx["subgraph"], indent=2, default=str)[:3000] if ctx["subgraph"] else "No system graph."
 
-        prompt = f"""This component changed. Here are the downstream entities affected:
+        system_prompt = "You are Solus, a robotics impact analysis assistant. For each affected entity, explain HOW it is affected and what the engineer needs to do."
+
+        user_prompt = f"""This component changed. Here are the downstream entities affected:
 
 {impact_str}
 
 ROBOT SYSTEM GRAPH:
 {subgraph_str}
 
-For each affected entity, explain HOW it is affected and what the engineer needs to do.
-
 Context: {q.query}"""
 
-        response_text = await self._call_gemini(prompt)
+        response_text = self._call_llm(system_prompt, user_prompt)
 
         return AgentResponse(
             query_id=q.id,
@@ -215,14 +220,16 @@ Context: {q.query}"""
         ctx = self._build_context(q)
         subgraph_str = json.dumps(ctx["subgraph"], indent=2, default=str)[:3000] if ctx["subgraph"] else "No system graph."
 
-        prompt = f"""Given this robot system, answer the following question.
+        system_prompt = "You are Solus, a robotics engineering assistant with access to the robot's full system context."
+
+        user_prompt = f"""Given this robot system, answer the following question.
 
 ROBOT SYSTEM GRAPH:
 {subgraph_str}
 
 Question: {q.query}"""
 
-        response_text = await self._call_gemini(prompt)
+        response_text = self._call_llm(system_prompt, user_prompt)
 
         return AgentResponse(
             query_id=q.id,
@@ -237,7 +244,9 @@ Question: {q.query}"""
         for filename, content in ctx["source_code"].items():
             source_str += f"--- {filename} ---\n{content}\n\n"
 
-        prompt = f"""Generate a detailed integration plan for this robot system.
+        system_prompt = "You are Solus, a robotics integration planning assistant. Provide: step-by-step plan, components needed, wiring changes, code changes, testing procedure."
+
+        user_prompt = f"""Generate a detailed integration plan for this robot system.
 
 ROBOT SYSTEM GRAPH:
 {subgraph_str}
@@ -245,11 +254,9 @@ ROBOT SYSTEM GRAPH:
 SOURCE CODE:
 {source_str if source_str else 'No source code available.'}
 
-Plan request: {q.query}
+Plan request: {q.query}"""
 
-Provide: step-by-step plan, components needed, wiring changes, code changes, testing procedure."""
-
-        response_text = await self._call_gemini(prompt)
+        response_text = self._call_llm(system_prompt, user_prompt)
 
         return AgentResponse(
             query_id=q.id,
@@ -299,11 +306,16 @@ Provide: step-by-step plan, components needed, wiring changes, code changes, tes
             "source_code": source_code,
         }
 
-    async def _call_gemini(self, prompt: str) -> str:
-        if self.model is None:
-            return "Gemini API key not configured. Set GEMINI_API_KEY environment variable."
+    def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
+        if not self.available:
+            return "Claude API key not configured. Set CLAUDE_API_KEY or ANTHROPIC_API_KEY."
         try:
-            response = self.model.generate_content(prompt)
-            return response.text
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}]
+            )
+            return response.content[0].text
         except Exception as e:
-            return f"Gemini error: {str(e)}"
+            return f"Claude API error: {str(e)}"

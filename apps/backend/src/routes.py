@@ -112,6 +112,10 @@ class ProjectCreate(BaseModel):
     description: str = ""
     id: str = ""
 
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
 class EntityCreate(BaseModel):
     entity_type: str
     name: str
@@ -228,6 +232,29 @@ async def get_project(project_id: str):
     return dict(row)
 
 
+@router.patch("/api/projects/{project_id}")
+async def update_project(project_id: str, body: ProjectUpdate):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Project not found")
+    updates = {}
+    if body.name is not None:
+        updates["name"] = body.name
+    if body.description is not None:
+        updates["description"] = body.description
+    if updates:
+        now = datetime.utcnow().isoformat()
+        sets = ", ".join(f"{k}=?" for k in updates)
+        vals = list(updates.values()) + [now, project_id]
+        conn.execute(f"UPDATE projects SET {sets}, updated_at=? WHERE id=?", vals)
+        conn.commit()
+    updated = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+    conn.close()
+    return dict(updated)
+
+
 # ── Team ──────────────────────────────────────────────────────────────
 
 @router.post("/api/projects/{project_id}/team")
@@ -260,6 +287,15 @@ async def get_team(project_id: str):
     rows = conn.execute("SELECT * FROM team_members WHERE project_id=?", (project_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+@router.delete("/api/projects/{project_id}/team/{member_id}")
+async def remove_team_member(project_id: str, member_id: str):
+    conn = get_connection()
+    conn.execute("DELETE FROM team_members WHERE id=? AND project_id=?", (member_id, project_id))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 # ── Sources ───────────────────────────────────────────────────────────
@@ -328,8 +364,9 @@ async def sync_source(project_id: str, source_id: str):
             connector = KiCadConnector(config["path"], project_id)
         elif source_type == "onshape":
             from .connectors.onshape import OnshapeConnector
+            doc_id = config.get("document_id") or config.get("url", "")
             connector = OnshapeConnector(
-                config["document_id"],
+                doc_id,
                 config.get("workspace_id", ""),
                 project_id,
                 os.environ.get("ONSHAPE_ACCESS_KEY", ""),
@@ -609,17 +646,18 @@ async def link_project(project_id: str):
 @router.post("/api/projects/{project_id}/agent/query")
 async def agent_query(project_id: str, body: AgentQueryCreate):
     if not solus_agent:
-        raise HTTPException(503, "Agent unavailable")
+        return {"query_id": "", "response_text": "Agent unavailable — check backend logs.", "confidence": 0.0}
     try:
-        result = await solus_agent.query(
+        aq = AgentQuery(
             project_id=project_id,
             query=body.query,
             query_type=body.query_type,
             context_entity_ids=body.context_entity_ids,
         )
+        result = await solus_agent.query(aq)
         return result
     except Exception as e:
-        raise HTTPException(500, str(e))
+        return {"query_id": "", "response_text": f"Agent error: {e}", "confidence": 0.0}
 
 
 # ── Similar Issues ────────────────────────────────────────────────────

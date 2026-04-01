@@ -4,6 +4,7 @@ Syncs parts and assemblies from Onshape REST API v6.
 """
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'packages', 'shared-types', 'src'))
@@ -19,11 +20,32 @@ HEADERS = {'Accept': 'application/json', 'Content-Type': 'application/json'}
 class OnshapeConnector:
     def __init__(self, document_id: str, workspace_id: str, project_id: str,
                  access_key: str = "", secret_key: str = ""):
-        self.did = document_id
-        self.wid = workspace_id
         self.project_id = project_id
         self.ak = access_key
         self.sk = secret_key
+        self.eid = ""
+
+        # Parse full Onshape URL if provided
+        if document_id and ("http" in document_id or "onshape.com" in document_id):
+            match = re.match(r'.*/documents/([a-f0-9]+)/w/([a-f0-9]+)/e/([a-f0-9]+)', document_id)
+            if match:
+                self.did = match.group(1)
+                self.wid = match.group(2)
+                self.eid = match.group(3)
+            else:
+                # Try without element: /documents/{did}/w/{wid}
+                match2 = re.match(r'.*/documents/([a-f0-9]+)/w/([a-f0-9]+)', document_id)
+                if match2:
+                    self.did = match2.group(1)
+                    self.wid = match2.group(2)
+                else:
+                    # Try just document id from URL: /documents/{did}
+                    match3 = re.match(r'.*/documents/([a-f0-9]+)', document_id)
+                    self.did = match3.group(1) if match3 else document_id
+                    self.wid = workspace_id
+        else:
+            self.did = document_id
+            self.wid = workspace_id
 
     def _get(self, path: str) -> dict | list | None:
         try:
@@ -52,8 +74,18 @@ class OnshapeConnector:
         doc = self._get(f"/documents/{self.did}")
         doc_name = doc.get("name", "Onshape Document") if doc else "Onshape Document"
 
+        # Auto-fetch workspace_id if empty
+        if not self.wid and doc:
+            dw = doc.get("defaultWorkspace")
+            if dw and dw.get("id"):
+                self.wid = dw["id"]
+                print(f"[onshape] auto-resolved workspace: {self.wid}")
+            else:
+                print("[onshape] no defaultWorkspace found in document")
+                return {"items": items, "entities": entities, "relations": []}
+
         # List elements
-        elements = self._get(f"/documents/{self.did}/w/{self.wid}/elements")
+        elements = self._get(f"/documents/d/{self.did}/w/{self.wid}/elements")
         if not elements:
             return {"items": items, "entities": entities, "relations": relations}
 
@@ -71,7 +103,7 @@ class OnshapeConnector:
 
     def _ingest_part_studio(self, eid: str, studio_name: str,
                             items: list, entities: list):
-        parts = self._get(f"/partstudios/d/{self.did}/w/{self.wid}/e/{eid}/parts")
+        parts = self._get(f"/parts/d/{self.did}/w/{self.wid}/e/{eid}")
         if not parts:
             return
 
@@ -178,7 +210,7 @@ class OnshapeConnector:
                     relations.append(rel)
 
     def get_assembly_structure(self) -> dict:
-        elements = self._get(f"/documents/{self.did}/w/{self.wid}/elements")
+        elements = self._get(f"/documents/d/{self.did}/w/{self.wid}/elements")
         if not elements:
             return {}
         for elem in elements:
@@ -189,7 +221,7 @@ class OnshapeConnector:
         return {}
 
     def get_parts(self) -> list[dict]:
-        elements = self._get(f"/documents/{self.did}/w/{self.wid}/elements")
+        elements = self._get(f"/documents/d/{self.did}/w/{self.wid}/elements")
         if not elements:
             return []
         parts = []

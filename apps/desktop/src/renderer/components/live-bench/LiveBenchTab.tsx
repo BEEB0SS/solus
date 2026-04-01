@@ -27,6 +27,8 @@ export default function LiveBenchTab() {
   const [customCmd, setCustomCmd] = useState('')
   const [discoveryBanner, setDiscoveryBanner] = useState('')
   const [flashBanner, setFlashBanner] = useState(false)
+  const [cameraConnected, setCameraConnected] = useState(true)
+  const [cameraUrl, setCameraUrl] = useState('')
   const wsRef = useRef<WebSocket | null>(null)
   const signalsRef = useRef<Record<string, SignalState>>({})
 
@@ -270,6 +272,13 @@ export default function LiveBenchTab() {
               <option value="9600">9600</option>
               <option value="115200">115200</option>
             </select>
+
+            <input
+              value={cameraUrl}
+              onChange={e => { setCameraUrl(e.target.value); setCameraConnected(true) }}
+              placeholder="192.168.4.1"
+              className="bg-solus-bg border border-solus-border rounded px-2 py-1 text-[10px] font-mono text-solus-text w-32 placeholder:text-solus-text-muted"
+            />
           </>
         )}
 
@@ -315,6 +324,29 @@ export default function LiveBenchTab() {
             className="text-solus-text-muted hover:text-solus-text">
             <Send size={11} />
           </button>
+        </div>
+      )}
+
+      {/* Camera feed */}
+      {mode === 'serial' && status === 'connected' && cameraUrl && (
+        <div className="relative bg-black border-b border-solus-border">
+          {cameraConnected ? (
+            <>
+              <img
+                src={`http://${cameraUrl}:81/stream`}
+                alt="Camera feed"
+                className="w-full max-h-48 object-contain bg-black rounded border border-solus-border"
+                onError={() => setCameraConnected(false)}
+              />
+              <span className="absolute top-2 right-2 bg-red-500 text-white text-[10px] font-mono font-bold px-1 rounded">
+                LIVE
+              </span>
+            </>
+          ) : (
+            <div className="w-full h-20 flex items-center justify-center text-xs font-mono text-solus-text-muted">
+              Camera unavailable
+            </div>
+          )}
         </div>
       )}
 

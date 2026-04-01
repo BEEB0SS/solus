@@ -40,6 +40,9 @@ export default function ContextModelTab() {
   const [impactedIds, setImpactedIds] = useState<Set<string>>(new Set())
   const [anomalyIds, setAnomalyIds] = useState<Set<string>>(new Set())
   const [connections, setConnections] = useState<{ type: string; names: string[] }[]>([])
+  const [chatInput, setChatInput] = useState('')
+  const [chatResponse, setChatResponse] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
   const nodesRef = useRef<GNode[]>([])
   const linksRef = useRef<GLink[]>([])
 
@@ -148,14 +151,17 @@ export default function ContextModelTab() {
       .selectAll<SVGCircleElement, GNode>('circle')
       .data(nodes)
       .join('circle')
-      .attr('r', (d) => 8 + Math.sqrt(d.connectionCount) * 3)
+      .attr('r', (d) => d.connectionCount === 0 ? 5 : 8 + Math.sqrt(d.connectionCount) * 4)
       .attr('fill', (d) => TYPE_COLORS[d.entity_type] || '#64748b')
+      .attr('fill-opacity', (d) => d.connectionCount === 0 ? 0.4 : 1)
       .attr('stroke', '#0a0a0f')
       .attr('stroke-width', 1.5)
       .attr('cursor', 'pointer')
       .on('click', (_event, d) => {
         setSelected(d)
         setImpactResult(null)
+        setChatInput('')
+        setChatResponse('')
         const conns: Record<string, string[]> = {}
         for (const l of validLinks) {
           const srcId = typeof l.source === 'object' ? (l.source as GNode).id : l.source
@@ -194,19 +200,30 @@ export default function ContextModelTab() {
       .selectAll('text')
       .data(nodes)
       .join('text')
-      .text((d) => d.name.length > 20 ? d.name.slice(0, 18) + '..' : d.name)
+      .text((d) => d.name.length > 15 ? d.name.slice(0, 13) + '..' : d.name)
       .attr('font-family', "'JetBrains Mono', monospace")
       .attr('font-size', '9px')
       .attr('fill', '#94a3b8')
-      .attr('dx', 14)
-      .attr('dy', 3)
+      .attr('text-anchor', 'middle')
+      .attr('dy', 15)
       .attr('pointer-events', 'none')
 
     const sim = d3.forceSimulation<GNode>(nodes)
-      .force('link', d3.forceLink<GNode, GLink>(validLinks).id(d => d.id).distance(80))
-      .force('charge', d3.forceManyBody().strength(-250))
+      .force('link', d3.forceLink<GNode, GLink>(validLinks).id(d => d.id).distance(150))
+      .force('charge', d3.forceManyBody().strength(-400))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide(20))
+      .force('collide', d3.forceCollide(30))
+      .force('x', d3.forceX<GNode>(width / 2).strength((d) => {
+        if (d.entity_type === 'software_module') return 0.05
+        if (d.entity_type === 'mechanical_part') return 0.05
+        if (d.entity_type === 'electrical_part') return 0.05
+        return 0.02
+      }).x((d) => {
+        if (d.entity_type === 'software_module') return width * 0.3
+        if (d.entity_type === 'mechanical_part') return width * 0.7
+        return width / 2
+      }))
+      .force('y', d3.forceY(height / 2).strength(0.05))
       .on('tick', () => {
         link
           .attr('x1', (d: any) => d.source.x)
@@ -238,6 +255,28 @@ export default function ContextModelTab() {
         return ''
       })
   }, [impactedIds, anomalyIds])
+
+  const handleChat = useCallback(async () => {
+    if (!selected || !chatInput.trim()) return
+    setChatLoading(true)
+    setChatResponse('')
+    try {
+      const res = await fetch(`/api/projects/${pid}/agent/query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: `Regarding the component ${selected.name}: ${chatInput}`,
+          query_type: 'general',
+        }),
+      })
+      const data = await res.json()
+      setChatResponse(data.response_text || data.response || JSON.stringify(data))
+    } catch {
+      setChatResponse('Error: could not reach agent.')
+    } finally {
+      setChatLoading(false)
+    }
+  }, [selected, chatInput, pid])
 
   const handleImpact = useCallback(async () => {
     if (!selected) return
@@ -293,11 +332,14 @@ export default function ContextModelTab() {
               <table className="w-full text-xs font-mono">
                 <tbody>
                   {Object.entries(selected.metadata)
-                    .filter(([k]) => k !== 'file_content')
                     .map(([k, v]) => (
                       <tr key={k} className="border-t border-solus-border/50">
                         <td className="py-1 pr-2 text-solus-text-muted align-top">{k}</td>
-                        <td className="py-1 text-solus-text break-all">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td>
+                        <td className="py-1 text-solus-text break-all">
+                          {k === 'file_content'
+                            ? `[${String(v).length} chars]`
+                            : typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                        </td>
                       </tr>
                     ))}
                 </tbody>
@@ -342,6 +384,32 @@ export default function ContextModelTab() {
               </div>
             </div>
           )}
+
+          {/* Mini-chat */}
+          <div className="border-t border-solus-border pt-3">
+            <h4 className="text-[10px] font-mono font-semibold uppercase tracking-widest text-solus-text-muted mb-1.5">Ask about this component</h4>
+            <form onSubmit={(e) => { e.preventDefault(); handleChat() }} className="flex gap-1.5">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                placeholder="Ask about this component..."
+                className="flex-1 bg-solus-bg border border-solus-border rounded px-2 py-1 text-xs font-mono text-solus-text placeholder:text-solus-text-muted/50 focus:outline-none focus:border-solus-accent"
+              />
+              <button
+                type="submit"
+                disabled={chatLoading || !chatInput.trim()}
+                className="bg-solus-accent/20 hover:bg-solus-accent/30 text-solus-accent-bright text-xs font-mono px-2 py-1 rounded disabled:opacity-40 transition-colors"
+              >
+                {chatLoading ? '...' : 'Ask'}
+              </button>
+            </form>
+            {chatResponse && (
+              <div className="mt-2 text-xs font-mono text-solus-text-dim leading-relaxed bg-solus-bg/50 rounded p-2 max-h-40 overflow-y-auto whitespace-pre-wrap">
+                {chatResponse}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { Send, Zap, Loader2 } from 'lucide-react'
 import { useProjectStore } from '../../stores/projectStore'
 
@@ -10,31 +10,32 @@ interface Message {
   variant?: 'logs' | 'success' | 'error'
 }
 
-let msgCounter = 0
-function uid() { return `msg-${++msgCounter}-${Date.now()}` }
+function detectQueryType(query: string): string {
+  const q = query.toLowerCase()
+  if (/bug|error|oscillat|diagnos|fix|fail|crash|wrong|broken/.test(q)) return 'debug'
+  if (/what part|recommend|component|suggest.*part|find.*part/.test(q)) return 'search_parts'
+  return 'general'
+}
 
 export default function IntelligenceTab() {
   const store = useProjectStore()
   const pid = store.currentProjectId
 
-  const [messages, setMessages] = useState<Message[]>([])
+  const messages = store.agentMessages as Message[]
   const [input, setInput] = useState('')
-  const [queryType, setQueryType] = useState('general')
   const [loading, setLoading] = useState(false)
   const [flashStates, setFlashStates] = useState<Record<string, string>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
-  const checkedRef = useRef(false)
 
   const scrollToBottom = () => {
     setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }), 50)
   }
 
   const addMessage = useCallback((msg: Omit<Message, 'id' | 'timestamp'>) => {
-    const m: Message = { ...msg, id: uid(), timestamp: Date.now() }
-    setMessages(prev => [...prev, m])
+    const m = store.addAgentMessage(msg)
     scrollToBottom()
-    return m
-  }, [])
+    return m as Message
+  }, [store])
 
   const sendQuery = useCallback(async (query: string, type: string) => {
     if (!query.trim()) return
@@ -74,7 +75,7 @@ export default function IntelligenceTab() {
     if (!input.trim() || loading) return
     const q = input
     setInput('')
-    sendQuery(q, queryType)
+    sendQuery(q, detectQueryType(q))
   }
 
   const handleFlash = async (code: string, blockId: string) => {
@@ -124,24 +125,35 @@ export default function IntelligenceTab() {
         const flashState = flashStates[blockId]
 
         parts.push(
-          <div key={i} className="my-2">
-            {lang && <div className="text-[9px] font-mono text-solus-text-muted px-3 pt-1.5 bg-solus-bg rounded-t">{lang}</div>}
-            <pre className={`bg-solus-bg p-3 ${lang ? 'rounded-b' : 'rounded'} font-mono text-xs overflow-x-auto text-solus-text whitespace-pre-wrap`}>{code}</pre>
+          <div key={i} className="my-3">
+            {lang && (
+              <div className="text-[9px] font-mono uppercase tracking-widest text-solus-text-muted px-4 pt-2 pb-1 bg-solus-bg border border-b-0 border-solus-border">
+                {lang}
+              </div>
+            )}
+            <pre className={`bg-solus-bg p-4 border border-solus-border ${lang ? '' : ''} font-mono text-xs overflow-x-auto text-solus-text`}>
+              {codeLines.map((cl, li) => (
+                <div key={li} className="flex">
+                  <span className="select-none text-solus-text-muted w-8 shrink-0 text-right pr-3">{li + 1}</span>
+                  <span className="whitespace-pre-wrap">{cl}</span>
+                </div>
+              ))}
+            </pre>
             {isArduino && (
               <button
                 onClick={() => handleFlash(code, blockId)}
                 disabled={flashState === 'compiling' || flashState === 'success'}
-                className={`w-full mt-1 py-2 font-semibold text-sm rounded transition-colors ${
+                className={`w-full py-2.5 font-mono font-semibold text-sm transition-colors ${
                   flashState === 'compiling' ? 'bg-amber-600 text-white' :
                   flashState === 'success' ? 'bg-green-600 text-white' :
                   flashState === 'error' ? 'bg-red-600 text-white hover:bg-red-500' :
                   'bg-solus-accent hover:bg-solus-accent-bright text-white'
                 }`}
               >
-                {flashState === 'compiling' ? 'Compiling...' :
-                 flashState === 'success' ? 'Flashed!' :
-                 flashState === 'error' ? 'Flash Failed — Retry' :
-                 '\u26A1 Flash Fix to Robot'}
+                {flashState === 'compiling' ? 'COMPILING...' :
+                 flashState === 'success' ? 'FLASHED' :
+                 flashState === 'error' ? 'FLASH FAILED — RETRY' :
+                 '\u26A1 FLASH FIX TO ROBOT'}
               </button>
             )}
           </div>
@@ -154,9 +166,9 @@ export default function IntelligenceTab() {
       const headerMatch = line.match(/^(LIKELY CAUSE|ROOT CAUSE|SUGGESTED FIX|CORRECTED CODE):(.*)$/i)
       if (headerMatch) {
         parts.push(
-          <div key={i} className="mt-3 mb-1">
-            <span className="text-sm font-bold uppercase tracking-wide text-solus-accent-bright">{headerMatch[1]}:</span>
-            {headerMatch[2] && <span className="text-sm text-solus-text ml-1">{headerMatch[2]}</span>}
+          <div key={i} className="bg-solus-accent/10 px-3 py-1 mt-3 mb-1">
+            <span className="text-xs font-mono font-semibold uppercase tracking-widest text-solus-accent-bright">{headerMatch[1]}</span>
+            {headerMatch[2]?.trim() && <span className="text-xs font-mono text-solus-text ml-2">{headerMatch[2].trim()}</span>}
           </div>
         )
         i++
@@ -168,13 +180,13 @@ export default function IntelligenceTab() {
       if (line.includes('`')) {
         const rendered = line.split(/(`[^`]+`)/).map((seg, si) => {
           if (seg.startsWith('`') && seg.endsWith('`')) {
-            return <code key={si} className="bg-solus-bg px-1 rounded font-mono text-xs">{seg.slice(1, -1)}</code>
+            return <code key={si} className="bg-solus-bg border border-solus-border px-1 py-0.5 font-mono text-xs">{seg.slice(1, -1)}</code>
           }
           return <span key={si}>{seg}</span>
         })
-        parts.push(<p key={i} className="text-sm leading-relaxed">{rendered}</p>)
+        parts.push(<p key={i} className="text-sm font-mono leading-relaxed text-solus-text">{rendered}</p>)
       } else if (line.trim()) {
-        parts.push(<p key={i} className="text-sm leading-relaxed">{line}</p>)
+        parts.push(<p key={i} className="text-sm font-mono leading-relaxed text-solus-text">{line}</p>)
       } else {
         parts.push(<div key={i} className="h-2" />)
       }
@@ -183,16 +195,6 @@ export default function IntelligenceTab() {
     }
 
     return parts
-  }
-
-  const msgBg = (msg: Message) => {
-    if (msg.role === 'user') return 'bg-solus-accent/20'
-    if (msg.role === 'system') {
-      if (msg.variant === 'error') return 'bg-solus-error/10'
-      if (msg.variant === 'success') return 'bg-solus-success/10'
-      return 'bg-solus-warning/10'
-    }
-    return 'bg-solus-elevated'
   }
 
   return (
@@ -204,24 +206,39 @@ export default function IntelligenceTab() {
       </div>
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.map(msg => (
-          <div key={msg.id} className={`${msg.role === 'user' ? 'flex justify-end' : ''}`}>
-            <div className={`${msgBg(msg)} rounded-lg px-4 py-3 ${
-              msg.role === 'user' ? 'max-w-[70%]' : 'w-full'
-            }`}>
-              {msg.role === 'user' ? (
-                <p className="text-sm font-mono">{msg.content}</p>
-              ) : (
-                <div>{renderContent(msg.content, msg.id)}</div>
-              )}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-2">
+        {messages.map(msg => {
+          if (msg.role === 'user') {
+            return (
+              <div key={msg.id} className="py-1">
+                <span className="text-xs font-mono text-solus-text-muted">Q:</span>
+                <span className="text-xs font-mono text-solus-text ml-2">{msg.content}</span>
+              </div>
+            )
+          }
+
+          if (msg.role === 'system') {
+            const bg = msg.variant === 'error' ? 'bg-solus-error/10 border-solus-error/20 text-solus-error'
+              : msg.variant === 'success' ? 'bg-solus-success/10 border-solus-success/20 text-solus-success'
+              : 'bg-solus-warning/10 border-solus-warning/20 text-solus-warning'
+            return (
+              <div key={msg.id} className={`w-full ${bg} border px-3 py-1.5`}>
+                <span className="text-xs font-mono">{msg.content}</span>
+              </div>
+            )
+          }
+
+          // Assistant
+          return (
+            <div key={msg.id} className="w-full bg-solus-elevated border border-solus-border px-4 py-3">
+              {renderContent(msg.content, msg.id)}
             </div>
-          </div>
-        ))}
+          )
+        })}
         {loading && (
-          <div className="flex items-center gap-2 text-solus-text-muted">
+          <div className="flex items-center gap-2 text-solus-text-muted py-2">
             <Loader2 size={14} className="animate-spin" />
-            <span className="text-xs font-mono">Analyzing...</span>
+            <span className="text-xs font-mono uppercase tracking-widest">Analyzing...</span>
           </div>
         )}
         {messages.length === 0 && !loading && (
@@ -234,21 +251,12 @@ export default function IntelligenceTab() {
 
       {/* Input */}
       <div className="border-t border-solus-border bg-solus-surface p-3 flex items-center gap-2">
-        <select value={queryType} onChange={e => setQueryType(e.target.value)}
-          className="bg-solus-bg border border-solus-border rounded px-2 py-1.5 text-[10px] font-mono text-solus-text">
-          <option value="general">general</option>
-          <option value="debug">debug</option>
-          <option value="search_parts">search_parts</option>
-          <option value="extract_values">extract_values</option>
-          <option value="impact_analysis">impact_analysis</option>
-          <option value="plan">plan</option>
-        </select>
         <input
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') handleSubmit() }}
           placeholder="Ask about your system..."
-          className="flex-1 bg-solus-bg border border-solus-border rounded px-3 py-1.5 font-mono text-sm text-solus-text placeholder:text-solus-text-muted"
+          className="flex-1 bg-solus-bg border border-solus-border px-3 py-1.5 font-mono text-sm text-solus-text placeholder:text-solus-text-muted"
         />
         {loading ? (
           <div className="w-9 h-9 flex items-center justify-center">
@@ -260,7 +268,7 @@ export default function IntelligenceTab() {
           </div>
         ) : (
           <button onClick={handleSubmit}
-            className="bg-solus-accent hover:bg-solus-accent-bright text-white p-2 rounded transition-colors">
+            className="bg-solus-accent hover:bg-solus-accent-bright text-white p-2 transition-colors">
             <Send size={14} />
           </button>
         )}

@@ -4,6 +4,7 @@ const API = ''
 
 interface ProjectStore {
   currentProjectId: string
+  currentProject: { id: string; name: string; description: string } | null
   projects: any[]
   entities: any[]
   relations: any[]
@@ -12,10 +13,15 @@ interface ProjectStore {
   team: any[]
   activity: any[]
   impact: any | null
+  agentMessages: Array<{ id: string; role: string; content: string; timestamp: number; variant?: string }>
 
+  addAgentMessage: (msg: { role: string; content: string; variant?: string }) => { id: string; role: string; content: string; timestamp: number; variant?: string }
+  clearAgentMessages: () => void
   fetchProjects: () => Promise<void>
   createProject: (name: string, description: string, id?: string) => Promise<any>
   setCurrentProject: (id: string) => void
+  fetchCurrentProject: (pid: string) => Promise<void>
+  updateProject: (pid: string, updates: { name?: string; description?: string }) => Promise<void>
   fetchGraph: (pid: string) => Promise<void>
   fetchChanges: (pid: string) => Promise<void>
   fetchSources: (pid: string) => Promise<void>
@@ -23,14 +29,16 @@ interface ProjectStore {
   syncSource: (pid: string, sid: string) => Promise<any>
   fetchTeam: (pid: string) => Promise<void>
   addTeamMember: (pid: string, name: string, role: string, email: string) => Promise<any>
+  removeTeamMember: (pid: string, memberId: string) => Promise<void>
   fetchImpact: (pid: string, entityId: string) => Promise<void>
   queryAgent: (pid: string, query: string, queryType: string) => Promise<any>
   fetchActivity: (pid: string) => Promise<void>
   discoverDevices: (pid: string) => Promise<any>
 }
 
-export const useProjectStore = create<ProjectStore>((set) => ({
-  currentProjectId: 'demo',
+export const useProjectStore = create<ProjectStore>((set, get) => ({
+  currentProjectId: '',
+  currentProject: null,
   projects: [],
   entities: [],
   relations: [],
@@ -39,6 +47,15 @@ export const useProjectStore = create<ProjectStore>((set) => ({
   team: [],
   activity: [],
   impact: null,
+  agentMessages: [],
+
+  addAgentMessage: (msg) => {
+    const m = { ...msg, id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, timestamp: Date.now() }
+    set((s) => ({ agentMessages: [...s.agentMessages, m] }))
+    return m
+  },
+
+  clearAgentMessages: () => set({ agentMessages: [] }),
 
   fetchProjects: async () => {
     const res = await fetch(`${API}/api/projects`)
@@ -52,10 +69,28 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, description, ...(id ? { id } : {}) }),
     })
-    return res.json()
+    const proj = await res.json()
+    set({ currentProjectId: proj.id, currentProject: proj })
+    return proj
   },
 
   setCurrentProject: (id) => set({ currentProjectId: id }),
+
+  fetchCurrentProject: async (pid) => {
+    const res = await fetch(`${API}/api/projects/${pid}`)
+    const data = await res.json()
+    set({ currentProject: data, currentProjectId: pid })
+  },
+
+  updateProject: async (pid, updates) => {
+    const res = await fetch(`${API}/api/projects/${pid}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    })
+    const data = await res.json()
+    set({ currentProject: data })
+  },
 
   fetchGraph: async (pid) => {
     const res = await fetch(`${API}/api/projects/${pid}/graph`)
@@ -104,6 +139,12 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       body: JSON.stringify({ name, role, email }),
     })
     return res.json()
+  },
+
+  removeTeamMember: async (pid, memberId) => {
+    await fetch(`${API}/api/projects/${pid}/team/${memberId}`, { method: 'DELETE' })
+    const { team } = get()
+    set({ team: team.filter((m: any) => m.id !== memberId) })
   },
 
   fetchImpact: async (pid, entityId) => {
