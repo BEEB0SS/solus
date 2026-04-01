@@ -1,0 +1,381 @@
+(kicad_sch (version 20230121) (generator "eeschema") (uuid "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
+  (paper "A4")
+
+  (lib_symbols)
+
+  ;; ============================================================
+  ;; COMPONENTS
+  ;; ============================================================
+
+  ;; U1 — ATmega328P (Arduino Uno MCU)
+  (symbol (lib_id "MCU_Microchip_ATmega:ATmega328P-AU") (at 100 80 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "11111111-1111-1111-1111-111111111111")
+    (property "Reference" "U1" (at 100 60 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "ATmega328P" (at 100 62 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Package_QFP:TQFP-32_7x7mm_P0.8mm" (at 100 64 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "D3" (uuid "u1-d3"))
+    (pin "D5" (uuid "u1-d5"))
+    (pin "D6" (uuid "u1-d6"))
+    (pin "D7" (uuid "u1-d7"))
+    (pin "D8" (uuid "u1-d8"))
+    (pin "D10" (uuid "u1-d10"))
+    (pin "D12" (uuid "u1-d12"))
+    (pin "D13" (uuid "u1-d13"))
+    (pin "A0" (uuid "u1-a0"))
+    (pin "A1" (uuid "u1-a1"))
+    (pin "A2" (uuid "u1-a2"))
+    (pin "A3" (uuid "u1-a3"))
+    (pin "TX" (uuid "u1-tx"))
+    (pin "RX" (uuid "u1-rx"))
+    (pin "VCC" (uuid "u1-vcc"))
+    (pin "GND" (uuid "u1-gnd"))
+  )
+
+  ;; U2 — TB6612FNG (Dual H-Bridge Motor Driver)
+  (symbol (lib_id "Driver_Motor:TB6612FNG") (at 160 80 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "22222222-2222-2222-2222-222222222222")
+    (property "Reference" "U2" (at 160 60 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "TB6612FNG" (at 160 62 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Package_SO:SSOP-24_5.3x8.2mm_P0.65mm" (at 160 64 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "PWMA" (uuid "u2-pwma"))
+    (pin "PWMB" (uuid "u2-pwmb"))
+    (pin "AIN1" (uuid "u2-ain1"))
+    (pin "AIN2" (uuid "u2-ain2"))
+    (pin "BIN1" (uuid "u2-bin1"))
+    (pin "BIN2" (uuid "u2-bin2"))
+    (pin "STBY" (uuid "u2-stby"))
+    (pin "VMOT" (uuid "u2-vmot"))
+    (pin "VCC" (uuid "u2-vcc"))
+    (pin "GND" (uuid "u2-gnd"))
+    (pin "AO1" (uuid "u2-ao1"))
+    (pin "AO2" (uuid "u2-ao2"))
+    (pin "BO1" (uuid "u2-bo1"))
+    (pin "BO2" (uuid "u2-bo2"))
+  )
+
+  ;; U3 — HC-SR04 (Ultrasonic Distance Sensor)
+  (symbol (lib_id "Sensor_Distance:HC-SR04") (at 220 80 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "33333333-3333-3333-3333-333333333333")
+    (property "Reference" "U3" (at 220 60 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "HC-SR04" (at 220 62 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Sensor_Distance:HC-SR04" (at 220 64 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "VCC" (uuid "u3-vcc"))
+    (pin "TRIG" (uuid "u3-trig"))
+    (pin "ECHO" (uuid "u3-echo"))
+    (pin "GND" (uuid "u3-gnd"))
+  )
+
+  ;; U4 — ESP32-WROVER (WiFi Camera Module)
+  (symbol (lib_id "RF_Module:ESP32-WROVER") (at 280 80 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "44444444-4444-4444-4444-444444444444")
+    (property "Reference" "U4" (at 280 60 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "ESP32-WROVER" (at 280 62 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "RF_Module:ESP32-WROVER" (at 280 64 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "TX" (uuid "u4-tx"))
+    (pin "RX" (uuid "u4-rx"))
+    (pin "VCC" (uuid "u4-vcc"))
+    (pin "GND" (uuid "u4-gnd"))
+  )
+
+  ;; M1 — DC_Motor_Left (Left front + rear wired parallel)
+  (symbol (lib_id "Motor:Motor_DC") (at 160 140 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "55555555-5555-5555-5555-555555555555")
+    (property "Reference" "M1" (at 160 130 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "DC_Motor_Left" (at 160 132 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Motor:Motor_DC" (at 160 134 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "+" (uuid "m1-plus"))
+    (pin "-" (uuid "m1-minus"))
+  )
+
+  ;; M2 — DC_Motor_Right (Right front + rear wired parallel)
+  (symbol (lib_id "Motor:Motor_DC") (at 180 140 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "66666666-6666-6666-6666-666666666666")
+    (property "Reference" "M2" (at 180 130 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "DC_Motor_Right" (at 180 132 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Motor:Motor_DC" (at 180 134 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "+" (uuid "m2-plus"))
+    (pin "-" (uuid "m2-minus"))
+  )
+
+  ;; M3 — SG90_Servo (Head sweep servo)
+  (symbol (lib_id "Motor:Servo_SG90") (at 200 140 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "77777777-7777-7777-7777-777777777777")
+    (property "Reference" "M3" (at 200 130 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "SG90_Servo" (at 200 132 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Motor:Servo_SG90" (at 200 134 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "Signal" (uuid "m3-signal"))
+    (pin "VCC" (uuid "m3-vcc"))
+    (pin "GND" (uuid "m3-gnd"))
+  )
+
+  ;; U5 — IR_Line_Sensor_Left
+  (symbol (lib_id "Sensor:IR_Line_Sensor") (at 100 140 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "88888888-8888-8888-8888-888888888888")
+    (property "Reference" "U5" (at 100 130 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "IR_Line_Sensor_Left" (at 100 132 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Sensor:IR_Line_Sensor" (at 100 134 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "OUT" (uuid "u5-out"))
+    (pin "VCC" (uuid "u5-vcc"))
+    (pin "GND" (uuid "u5-gnd"))
+  )
+
+  ;; U6 — IR_Line_Sensor_Center
+  (symbol (lib_id "Sensor:IR_Line_Sensor") (at 120 140 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "99999999-9999-9999-9999-999999999999")
+    (property "Reference" "U6" (at 120 130 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "IR_Line_Sensor_Center" (at 120 132 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Sensor:IR_Line_Sensor" (at 120 134 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "OUT" (uuid "u6-out"))
+    (pin "VCC" (uuid "u6-vcc"))
+    (pin "GND" (uuid "u6-gnd"))
+  )
+
+  ;; U7 — IR_Line_Sensor_Right
+  (symbol (lib_id "Sensor:IR_Line_Sensor") (at 140 140 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    (property "Reference" "U7" (at 140 130 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "IR_Line_Sensor_Right" (at 140 132 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Sensor:IR_Line_Sensor" (at 140 134 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "OUT" (uuid "u7-out"))
+    (pin "VCC" (uuid "u7-vcc"))
+    (pin "GND" (uuid "u7-gnd"))
+  )
+
+  ;; U8 — AMS1117-3.3 (Voltage Regulator 5V → 3.3V for ESP32)
+  (symbol (lib_id "Regulator_Linear:AMS1117-3.3") (at 260 80 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    (property "Reference" "U8" (at 260 60 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "AMS1117-3.3" (at 260 62 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Package_TO_SOT_SMD:SOT-223-3_TabPin2" (at 260 64 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "VIN" (uuid "u8-vin"))
+    (pin "OUT" (uuid "u8-out"))
+    (pin "GND" (uuid "u8-gnd"))
+  )
+
+  ;; C1 — 100uF Electrolytic (Motor power filtering)
+  (symbol (lib_id "Device:C_Polarized") (at 170 100 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "cccccccc-cccc-cccc-cccc-cccccccccccc")
+    (property "Reference" "C1" (at 170 95 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "100uF" (at 170 97 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Capacitor_THT:CP_Radial_D6.3mm_P2.50mm" (at 170 99 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "+" (uuid "c1-plus"))
+    (pin "-" (uuid "c1-minus"))
+  )
+
+  ;; C2 — 100nF Ceramic (MCU decoupling)
+  (symbol (lib_id "Device:C") (at 90 100 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "dddddddd-dddd-dddd-dddd-dddddddddddd")
+    (property "Reference" "C2" (at 90 95 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "100nF" (at 90 97 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Capacitor_SMD:C_0805_2012Metric" (at 90 99 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "1" (uuid "c2-1"))
+    (pin "2" (uuid "c2-2"))
+  )
+
+  ;; C3 — 10uF (Regulator output cap)
+  (symbol (lib_id "Device:C_Polarized") (at 270 100 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+    (property "Reference" "C3" (at 270 95 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "10uF" (at 270 97 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Capacitor_SMD:C_0805_2012Metric" (at 270 99 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "+" (uuid "c3-plus"))
+    (pin "-" (uuid "c3-minus"))
+  )
+
+  ;; R1 — 10K (Voltage divider high side, ECHO 5V→3.3V)
+  (symbol (lib_id "Device:R") (at 230 100 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "f1f1f1f1-f1f1-f1f1-f1f1-f1f1f1f1f1f1")
+    (property "Reference" "R1" (at 230 95 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "10K" (at 230 97 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Resistor_SMD:R_0805_2012Metric" (at 230 99 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "1" (uuid "r1-1"))
+    (pin "2" (uuid "r1-2"))
+  )
+
+  ;; R2 — 20K (Voltage divider low side)
+  (symbol (lib_id "Device:R") (at 240 100 0) (unit 1)
+    (in_bom yes) (on_board yes)
+    (uuid "f2f2f2f2-f2f2-f2f2-f2f2-f2f2f2f2f2f2")
+    (property "Reference" "R2" (at 240 95 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "20K" (at 240 97 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Resistor_SMD:R_0805_2012Metric" (at 240 99 0) (effects (font (size 1.27 1.27)) hide))
+    (pin "1" (uuid "r2-1"))
+    (pin "2" (uuid "r2-2"))
+  )
+
+  ;; ============================================================
+  ;; NET LABELS — Signal-to-component mapping
+  ;; ============================================================
+
+  ;; Motor control nets
+  (net_label "MOTOR_L_PWM" (at 130 75 0) (uuid "net-mlpwm")
+    (effects (font (size 1.27 1.27)))
+    ;; U1.D5 → U2.PWMA
+  )
+  (net_label "MOTOR_R_PWM" (at 130 77 0) (uuid "net-mrpwm")
+    (effects (font (size 1.27 1.27)))
+    ;; U1.D6 → U2.PWMB
+  )
+  (net_label "MOTOR_L_DIR" (at 130 79 0) (uuid "net-mldir")
+    (effects (font (size 1.27 1.27)))
+    ;; U1.D7 → U2.AIN1
+  )
+  (net_label "MOTOR_R_DIR" (at 130 81 0) (uuid "net-mrdir")
+    (effects (font (size 1.27 1.27)))
+    ;; U1.D8 → U2.BIN1
+  )
+  (net_label "MOTOR_STBY" (at 130 83 0) (uuid "net-mstby")
+    (effects (font (size 1.27 1.27)))
+    ;; U1.D3 → U2.STBY
+  )
+
+  ;; Ultrasonic sensor nets
+  (net_label "ULTRASONIC_TRIG" (at 200 75 0) (uuid "net-utrig")
+    (effects (font (size 1.27 1.27)))
+    ;; U1.D13 → U3.TRIG
+  )
+  (net_label "ULTRASONIC_ECHO" (at 200 77 0) (uuid "net-uecho")
+    (effects (font (size 1.27 1.27)))
+    ;; U3.ECHO → R1 → R2 → U1.D12
+  )
+
+  ;; Servo net
+  (net_label "SERVO_PWM" (at 200 79 0) (uuid "net-servo")
+    (effects (font (size 1.27 1.27)))
+    ;; U1.D10 → M3.Signal
+  )
+
+  ;; Line sensor nets
+  (net_label "LINE_L" (at 100 120 0) (uuid "net-linel")
+    (effects (font (size 1.27 1.27)))
+    ;; U5.OUT → U1.A0
+  )
+  (net_label "LINE_M" (at 120 120 0) (uuid "net-linem")
+    (effects (font (size 1.27 1.27)))
+    ;; U6.OUT → U1.A1
+  )
+  (net_label "LINE_R" (at 140 120 0) (uuid "net-liner")
+    (effects (font (size 1.27 1.27)))
+    ;; U7.OUT → U1.A2
+  )
+
+  ;; Battery sense net
+  (net_label "VBAT_SENSE" (at 100 122 0) (uuid "net-vbat-sense")
+    (effects (font (size 1.27 1.27)))
+    ;; voltage divider → U1.A3
+  )
+
+  ;; Serial communication nets
+  (net_label "SERIAL_TX" (at 280 75 0) (uuid "net-stx")
+    (effects (font (size 1.27 1.27)))
+    ;; U1.TX → U4.RX (via R1/R2 level shift)
+  )
+  (net_label "SERIAL_RX" (at 280 77 0) (uuid "net-srx")
+    (effects (font (size 1.27 1.27)))
+    ;; U4.TX → U1.RX
+  )
+
+  ;; Power nets
+  (net_label "VCC_5V" (at 100 55 0) (uuid "net-5v")
+    (effects (font (size 1.27 1.27)))
+    ;; 5V power rail: U1, U2.VCC, U3.VCC, sensors
+  )
+  (net_label "VCC_3V3" (at 260 55 0) (uuid "net-3v3")
+    (effects (font (size 1.27 1.27)))
+    ;; U8.OUT → U4.VCC
+  )
+  (net_label "GND" (at 150 160 0) (uuid "net-gnd")
+    (effects (font (size 1.27 1.27)))
+    ;; Ground rail
+  )
+  (net_label "VBAT" (at 170 55 0) (uuid "net-vbat")
+    (effects (font (size 1.27 1.27)))
+    ;; Battery → U2.VMOT, U8.VIN
+  )
+
+  ;; ============================================================
+  ;; WIRES — Physical connections
+  ;; ============================================================
+
+  ;; Motor PWM: U1.D5 → U2.PWMA (MOTOR_L_PWM)
+  (wire (pts (xy 110 80) (xy 150 80)) (uuid "w-mlpwm"))
+  ;; Motor PWM: U1.D6 → U2.PWMB (MOTOR_R_PWM)
+  (wire (pts (xy 110 82) (xy 150 82)) (uuid "w-mrpwm"))
+  ;; Motor DIR: U1.D7 → U2.AIN1 (MOTOR_L_DIR)
+  (wire (pts (xy 110 84) (xy 150 84)) (uuid "w-mldir"))
+  ;; Motor DIR: U1.D8 → U2.BIN1 (MOTOR_R_DIR)
+  (wire (pts (xy 110 86) (xy 150 86)) (uuid "w-mrdir"))
+  ;; Motor STBY: U1.D3 → U2.STBY (MOTOR_STBY)
+  (wire (pts (xy 110 88) (xy 150 88)) (uuid "w-mstby"))
+
+  ;; Ultrasonic: U1.D13 → U3.TRIG (ULTRASONIC_TRIG)
+  (wire (pts (xy 110 90) (xy 210 90)) (uuid "w-utrig"))
+  ;; Ultrasonic ECHO: U3.ECHO → R1 → R2 voltage divider → U1.D12 (ULTRASONIC_ECHO)
+  (wire (pts (xy 230 80) (xy 230 95)) (uuid "w-echo-r1"))
+  (wire (pts (xy 230 105) (xy 240 95)) (uuid "w-r1-r2"))
+  (wire (pts (xy 240 105) (xy 240 110)) (uuid "w-r2-gnd"))
+  (wire (pts (xy 235 100) (xy 110 92)) (uuid "w-echo-mcu"))
+
+  ;; Servo: U1.D10 → M3.Signal (SERVO_PWM)
+  (wire (pts (xy 110 94) (xy 200 130)) (uuid "w-servo"))
+
+  ;; Line sensors: U5.OUT → U1.A0 (LINE_L)
+  (wire (pts (xy 100 135) (xy 95 100)) (uuid "w-linel"))
+  ;; Line sensors: U6.OUT → U1.A1 (LINE_M)
+  (wire (pts (xy 120 135) (xy 96 100)) (uuid "w-linem"))
+  ;; Line sensors: U7.OUT → U1.A2 (LINE_R)
+  (wire (pts (xy 140 135) (xy 97 100)) (uuid "w-liner"))
+
+  ;; Battery sense voltage divider → U1.A3 (VBAT_SENSE)
+  (wire (pts (xy 98 100) (xy 98 110)) (uuid "w-vbat-sense"))
+
+  ;; Motor outputs: U2.AO1/AO2 → M1 (left motors)
+  (wire (pts (xy 160 100) (xy 160 130)) (uuid "w-ao-m1"))
+  ;; Motor outputs: U2.BO1/BO2 → M2 (right motors)
+  (wire (pts (xy 170 100) (xy 180 130)) (uuid "w-bo-m2"))
+
+  ;; Serial: U1.TX → U4.RX (via level shift) (SERIAL_TX)
+  (wire (pts (xy 110 96) (xy 270 85)) (uuid "w-serial-tx"))
+  ;; Serial: U4.TX → U1.RX (SERIAL_RX)
+  (wire (pts (xy 270 83) (xy 110 98)) (uuid "w-serial-rx"))
+
+  ;; Power: VBAT → U2.VMOT
+  (wire (pts (xy 170 55) (xy 160 65)) (uuid "w-vbat-vmot"))
+  ;; Power: VBAT → U8.VIN
+  (wire (pts (xy 170 55) (xy 260 65)) (uuid "w-vbat-vin"))
+  ;; Power: U8.OUT → U4.VCC (VCC_3V3)
+  (wire (pts (xy 265 80) (xy 275 80)) (uuid "w-3v3-esp"))
+  ;; Power: VCC_5V rail
+  (wire (pts (xy 100 55) (xy 100 65)) (uuid "w-5v-mcu"))
+  (wire (pts (xy 100 55) (xy 160 55)) (uuid "w-5v-driver"))
+  (wire (pts (xy 100 55) (xy 220 55)) (uuid "w-5v-hcsr04"))
+  ;; Ground rail
+  (wire (pts (xy 100 100) (xy 150 160)) (uuid "w-gnd-main"))
+
+  ;; Decoupling: C2 across U1 VCC/GND
+  (wire (pts (xy 90 95) (xy 100 65)) (uuid "w-c2-vcc"))
+  (wire (pts (xy 90 105) (xy 100 100)) (uuid "w-c2-gnd"))
+  ;; Motor filter: C1 across VMOT
+  (wire (pts (xy 170 95) (xy 170 55)) (uuid "w-c1-vmot"))
+  (wire (pts (xy 170 105) (xy 170 160)) (uuid "w-c1-gnd"))
+  ;; Regulator output: C3 across U8.OUT
+  (wire (pts (xy 270 95) (xy 265 80)) (uuid "w-c3-out"))
+  (wire (pts (xy 270 105) (xy 270 160)) (uuid "w-c3-gnd"))
+
+)
