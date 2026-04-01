@@ -87,12 +87,12 @@ export default function IntelligenceTab() {
         body: JSON.stringify({ name: 'agent_fix', code, port: '' }),
       })
       const data = await res.json()
-      if (data.success || res.ok) {
+      if (data.success) {
         setFlashStates(p => ({ ...p, [blockId]: 'success' }))
         addMessage({ role: 'system', content: 'Code flashed successfully! Switch to Live Bench and reconnect.', variant: 'success' })
       } else {
         setFlashStates(p => ({ ...p, [blockId]: 'error' }))
-        addMessage({ role: 'system', content: `Flash failed: ${data.error || 'Unknown error'}`, variant: 'error' })
+        addMessage({ role: 'system', content: `Flash failed at ${data.stage}: ${data.errors || 'Unknown error'}`, variant: 'error' })
       }
     } catch {
       setFlashStates(p => ({ ...p, [blockId]: 'error' }))

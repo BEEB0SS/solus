@@ -33,6 +33,7 @@ class MuJoCoSimulator:
         self.model = None
         self.data = None
         self._last_error = 0.0
+        self._last_valid_distance = 4.0  # Last valid rangefinder reading (meters)
         self._pid_running = False
 
         # Kinematic fallback state
@@ -49,6 +50,9 @@ class MuJoCoSimulator:
             "obstacle_3": [0.15, 0.05, 0.03],
             "obstacle_4": [0.05, 0.2, 0.05],
         }
+
+        # Auto-load model on construction
+        self.load_from_params(self.params)
 
     # ── MJCF Model ────────────────────────────────────────────────────
 
@@ -111,9 +115,9 @@ class MuJoCoSimulator:
               euler="90 0 0"/>
       </body>
 
-      <!-- Ultrasonic sensor site (front center) -->
+      <!-- Ultrasonic sensor site (front center, Z-axis pointing forward +X) -->
       <site name="ultrasonic" pos="{cl/2:.4f} 0 0" type="box" size="0.01 0.01 0.01"
-            material="sensor_mat"/>
+            material="sensor_mat" euler="0 90 0"/>
     </body>
 
     <!-- Obstacles -->
@@ -139,7 +143,7 @@ class MuJoCoSimulator:
   </actuator>
 
   <sensor>
-    <rangefinder name="ultrasonic" site="ultrasonic"/>
+    <rangefinder name="ultrasonic" site="ultrasonic" cutoff="4.0"/>
     <velocimeter name="chassis_vel" site="ultrasonic"/>
   </sensor>
 </mujoco>
@@ -150,11 +154,14 @@ class MuJoCoSimulator:
     def load_from_params(self, params: dict):
         self.params.update(params)
         self._last_error = 0.0
+        self._update_body_sizes()
         if self.available:
             try:
                 xml = self._build_mjcf()
                 self.model = mujoco.MjModel.from_xml_string(xml)
                 self.data = mujoco.MjData(self.model)
+                # MUST call mj_forward to populate xpos/xquat from initial XML positions
+                mujoco.mj_forward(self.model, self.data)
                 print("[simulator] MuJoCo model loaded")
             except Exception as e:
                 print(f"[simulator] MuJoCo load failed: {e}")
@@ -164,6 +171,22 @@ class MuJoCoSimulator:
             self.model = None
             self.data = None
             print("[simulator] kinematic stub (mujoco not available)")
+
+    def _update_body_sizes(self):
+        """Cache body sizes from current params for frontend rendering."""
+        p = self.params
+        wr = p["wheel_radius"]
+        ww = p["wheel_width"]
+        cl = p["chassis_length"]
+        cw = p["chassis_width"]
+        ch = p["chassis_height"]
+        self._body_sizes = {
+            "chassis": [cl / 2, cw / 2, ch / 2],
+            "wheel_fl": [wr, ww / 2],
+            "wheel_fr": [wr, ww / 2],
+            "wheel_rl": [wr, ww / 2],
+            "wheel_rr": [wr, ww / 2],
+        }
 
     def update_from_onshape(self, onshape_data: dict):
         parts = onshape_data.get("parts", [])
@@ -178,7 +201,7 @@ class MuJoCoSimulator:
                 width = dims.get("width", dims.get("thickness", 0))
                 if width > 0:
                     params["wheel_width"] = width
-            elif "chassis" in name or "body" in name or "frame" in name:
+            elif any(k in name for k in ("chassis", "body", "frame", "bottom plate")):
                 if "length" in dims:
                     params["chassis_length"] = dims["length"]
                 if "width" in dims:
@@ -194,6 +217,36 @@ class MuJoCoSimulator:
 
     # ── State readout ─────────────────────────────────────────────────
 
+    def _read_body(self, name: str) -> tuple[list[float], list[float]] | None:
+        """Read body position and quaternion. Tries named API, falls back to ID-based."""
+        try:
+            bd = self.data.body(name)
+            return bd.xpos.tolist(), bd.xquat.tolist()
+        except Exception:
+            pass
+        try:
+            body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
+            if body_id >= 0:
+                return self.data.xpos[body_id].tolist(), self.data.xquat[body_id].tolist()
+        except Exception:
+            pass
+        return None
+
+    def _read_sensor(self, name: str) -> float:
+        """Read a named sensor value."""
+        try:
+            return float(self.data.sensor(name).data[0])
+        except Exception:
+            pass
+        try:
+            sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, name)
+            if sensor_id >= 0:
+                adr = self.model.sensor_adr[sensor_id]
+                return float(self.data.sensordata[adr])
+        except Exception:
+            pass
+        return -1.0
+
     def get_state(self) -> dict:
         """Return ALL body positions/orientations for Three.js rendering."""
         torque = self.params.get("motor_torque", 0.5)
@@ -201,30 +254,29 @@ class MuJoCoSimulator:
         if self.available and self.model is not None and self.data is not None:
             bodies = {}
             for name in self._body_names:
-                try:
-                    body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
-                    if body_id < 0:
-                        continue
-                    pos = self.data.xpos[body_id].tolist()
-                    quat = self.data.xquat[body_id].tolist()
-                    entry = {"pos": [round(v, 5) for v in pos],
-                             "quat": [round(v, 5) for v in quat]}
-                    if name in self._obstacle_sizes:
-                        entry["size"] = self._obstacle_sizes[name]
-                    bodies[name] = entry
-                except Exception:
+                result = self._read_body(name)
+                if result is None:
                     continue
+                pos, quat = result
+                entry: dict = {
+                    "pos": [round(v, 5) for v in pos],
+                    "quat": [round(v, 5) for v in quat],
+                }
+                # Add type and size for frontend rendering
+                if name == "chassis":
+                    entry["type"] = "box"
+                elif name.startswith("wheel_"):
+                    entry["type"] = "cylinder"
+                elif name.startswith("obstacle"):
+                    entry["type"] = "box"
+                if name in self._obstacle_sizes:
+                    entry["size"] = self._obstacle_sizes[name]
+                if hasattr(self, '_body_sizes') and name in self._body_sizes:
+                    entry["size"] = self._body_sizes[name]
+                bodies[name] = entry
 
             # Read sensors
-            distance_raw = -1.0
-            try:
-                sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "ultrasonic")
-                if sensor_id >= 0:
-                    adr = self.model.sensor_adr[sensor_id]
-                    distance_raw = float(self.data.sensordata[adr])
-            except Exception:
-                pass
-
+            distance_raw = self._read_sensor("ultrasonic")
             distance_cm = distance_raw * 100 if distance_raw >= 0 else 400.0
 
             sensors = {
@@ -245,32 +297,38 @@ class MuJoCoSimulator:
 
         # Kinematic fallback
         s = self._kin
-        chassis_z = self.params["wheel_radius"] + self.params["chassis_height"] / 2
+        p = self.params
+        chassis_z = p["wheel_radius"] + p["chassis_height"] / 2
+        body_sizes = getattr(self, '_body_sizes', {})
         bodies = {
             "chassis": {
                 "pos": [round(s["x"], 5), round(s["y"], 5), round(chassis_z, 5)],
                 "quat": self._euler_to_quat(0, 0, s["theta"]),
+                "size": body_sizes.get("chassis", [p["chassis_length"] / 2, p["chassis_width"] / 2, p["chassis_height"] / 2]),
+                "type": "box",
             },
         }
         # Approximate wheel positions
-        cl = self.params["chassis_length"]
-        ws = self.params["wheel_separation"]
-        ch = self.params["chassis_height"]
+        cl = p["chassis_length"]
+        ws = p["wheel_separation"]
         ct, st = math.cos(s["theta"]), math.sin(s["theta"])
         for wname, dx, dy in [("wheel_fl", cl/4, ws/2), ("wheel_fr", cl/4, -ws/2),
                                ("wheel_rl", -cl/4, ws/2), ("wheel_rr", -cl/4, -ws/2)]:
             wx = s["x"] + dx * ct - dy * st
             wy = s["y"] + dx * st + dy * ct
             bodies[wname] = {
-                "pos": [round(wx, 5), round(wy, 5), round(self.params["wheel_radius"], 5)],
+                "pos": [round(wx, 5), round(wy, 5), round(p["wheel_radius"], 5)],
                 "quat": self._euler_to_quat(0, 0, s["theta"]),
+                "size": body_sizes.get(wname, [p["wheel_radius"], p["wheel_width"] / 2]),
+                "type": "cylinder",
             }
 
+        _obstacle_positions = {
+            "obstacle_1": [0.5, 0, 0.05], "obstacle_2": [-0.3, 0.4, 0.05],
+            "obstacle_3": [0.1, -0.5, 0.03], "obstacle_4": [-0.5, -0.3, 0.05],
+        }
         for oname, osize in self._obstacle_sizes.items():
-            # Static obstacle positions from MJCF defaults
-            opos = {"obstacle_1": [0.5, 0, 0.05], "obstacle_2": [-0.3, 0.4, 0.05],
-                    "obstacle_3": [0.1, -0.5, 0.03], "obstacle_4": [-0.5, -0.3, 0.05]}
-            bodies[oname] = {"pos": opos.get(oname, [0, 0, 0]), "quat": [1, 0, 0, 0], "size": osize}
+            bodies[oname] = {"pos": _obstacle_positions.get(oname, [0, 0, 0]), "quat": [1, 0, 0, 0], "size": osize, "type": "box"}
 
         sensors = {
             "distance_cm": round(s["distance"], 2),
@@ -353,28 +411,28 @@ class MuJoCoSimulator:
         kd = self.params.get("kd", 0.5)
         target = self.params.get("target_distance", 0.25)
         torque = self.params.get("motor_torque", 0.5)
-        base_speed = 0.3
 
         if self.available and self.model is not None and self.data is not None:
             # Read ultrasonic
-            distance_raw = -1.0
-            try:
-                sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "ultrasonic")
-                if sensor_id >= 0:
-                    adr = self.model.sensor_adr[sensor_id]
-                    distance_raw = float(self.data.sensordata[adr])
-            except Exception:
-                pass
+            distance_raw = self._read_sensor("ultrasonic")
 
-            distance_m = distance_raw if distance_raw >= 0 else 4.0
+            # Use last valid reading when rangefinder misses (returns -1)
+            if distance_raw >= 0:
+                distance_m = distance_raw
+                self._last_valid_distance = distance_raw
+            else:
+                distance_m = self._last_valid_distance
 
             error = distance_m - target
             derivative = error - self._last_error
             output = kp * error + kd * derivative
             self._last_error = error
 
-            left = max(-1, min(1, base_speed + output))
-            right = max(-1, min(1, base_speed - output))
+            # PID controls forward/backward speed (no base offset)
+            # Positive error (too far) → forward, negative (too close) → reverse
+            speed = max(-1, min(1, output))
+            left = speed
+            right = speed
 
             self.data.ctrl[0] = left * torque
             self.data.ctrl[1] = left * torque
@@ -394,8 +452,9 @@ class MuJoCoSimulator:
         output = kp * error + kd * derivative
         self._last_error = error
 
-        left = max(-1, min(1, base_speed + output))
-        right = max(-1, min(1, base_speed - output))
+        speed = max(-1, min(1, output))
+        left = speed
+        right = speed
 
         return self.step_manual(left, right, n_steps=50)
 
@@ -422,6 +481,7 @@ class MuJoCoSimulator:
 
         if self.available and self.model is not None and self.data is not None:
             mujoco.mj_resetData(self.model, self.data)
+            mujoco.mj_forward(self.model, self.data)
             self._last_error = 0.0
 
             for step in range(n_steps):
@@ -462,11 +522,13 @@ class MuJoCoSimulator:
 
     def reset(self):
         self._last_error = 0.0
+        self._last_valid_distance = 4.0
         self._pid_running = False
         self._kin = {"x": 0.0, "y": 0.0, "z": 0.0, "theta": 0.0,
                      "trail": [], "left_motor": 0.0, "right_motor": 0.0, "distance": 100.0}
         if self.available and self.model is not None and self.data is not None:
             mujoco.mj_resetData(self.model, self.data)
+            mujoco.mj_forward(self.model, self.data)
         return self.get_state()
 
     def reset_manual(self):

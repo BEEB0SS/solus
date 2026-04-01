@@ -160,7 +160,7 @@ class FixCreate(BaseModel):
 
 class LiveBenchStart(BaseModel):
     mode: str = "simulated"
-    port: str = "/dev/ttyUSB0"
+    port: str = ""
     baud: int = 9600
 
 class SerialCommand(BaseModel):
@@ -960,14 +960,14 @@ async def sim_manual_control(project_id: str, req: dict):
         "STOP": (0.0, 0.0),
     }
     left, right = motor_map.get(command.upper(), (0.0, 0.0))
-    result = simulator.step_manual(left, right)
+    result = simulator.step_manual(left, right, n_steps=200)
     return result
 
 
 @router.post("/api/projects/{project_id}/simulator/reset")
 async def sim_reset(project_id: str):
     if simulator:
-        simulator.reset_manual()
+        return simulator.reset_manual()
     return {"reset": True}
 
 
@@ -1005,22 +1005,47 @@ async def update_sim_from_onshape(project_id: str, body: dict):
         os.environ.get("ONSHAPE_SECRET_KEY", ""),
     )
 
-    # Get assembly structure for part dimensions
-    asm = connector.get_assembly_structure()
-    parts_data = []
-    if asm:
-        instances = asm.get("rootAssembly", {}).get("instances", [])
-        for inst in instances:
-            parts_data.append({
-                "name": inst.get("name", ""),
-                "partId": inst.get("partId", ""),
-            })
+    # Use sync() which fetches mass properties + bounding boxes
+    sync_result = connector.sync()
+    entities = sync_result.get("entities", [])
 
-    # Get parts with bounding boxes for dimension estimates
-    raw_parts = connector.get_parts()
+    old_params = dict(simulator.params)
 
-    # Try to download STL for key parts (chassis, wheels)
+    # Extract real dimensions from entity metadata (dimensions_mm from bounding boxes)
+    onshape_body = {"parts": []}
+    for ent in entities:
+        name = ent.name if hasattr(ent, "name") else ent.get("name", "")
+        meta = ent.metadata if hasattr(ent, "metadata") else ent.get("metadata", {})
+        dims_mm = meta.get("dimensions_mm", {})
+        name_lower = name.lower()
+
+        entry = {"name": name, "dimensions": {}}
+        if "wheel" in name_lower and dims_mm:
+            # Wheel: diameter = max bounding box dimension (mm -> m)
+            vals = [dims_mm.get("x", 0), dims_mm.get("y", 0), dims_mm.get("z", 0)]
+            diameter_mm = max(vals) if vals else 0
+            # Width = smallest dimension
+            width_mm = min(v for v in vals if v > 0) if any(v > 0 for v in vals) else 0
+            if diameter_mm > 0:
+                entry["dimensions"]["diameter"] = diameter_mm / 1000
+            if width_mm > 0:
+                entry["dimensions"]["width"] = width_mm / 1000
+        elif any(k in name_lower for k in ("chassis", "body", "frame", "bottom plate")) and dims_mm:
+            # Chassis: length = largest, width = middle, height = smallest
+            vals = sorted([dims_mm.get("x", 0), dims_mm.get("y", 0), dims_mm.get("z", 0)], reverse=True)
+            if vals[0] > 0:
+                entry["dimensions"]["length"] = vals[0] / 1000
+            if vals[1] > 0:
+                entry["dimensions"]["width"] = vals[1] / 1000
+            if vals[2] > 0:
+                entry["dimensions"]["height"] = vals[2] / 1000
+
+        if entry["dimensions"]:
+            onshape_body["parts"].append(entry)
+
+    # Try to download STL for key parts
     stl_parts = []
+    raw_parts = connector.get_parts()
     for part in raw_parts:
         name_lower = part.get("name", "").lower()
         if any(k in name_lower for k in ("chassis", "wheel", "body", "frame")):
@@ -1042,26 +1067,24 @@ async def update_sim_from_onshape(project_id: str, body: dict):
                 except Exception as e:
                     print(f"[routes] STL download failed for {part['name']}: {e}")
 
-    # Build params from part names using bounding box heuristics
-    onshape_body = {"parts": []}
-    for part in raw_parts:
-        name_lower = part.get("name", "").lower()
-        entry = {"name": part.get("name", ""), "dimensions": {}}
-        # Use default dimensions as estimates — real dims come from mass properties
-        if "wheel" in name_lower:
-            entry["dimensions"] = {"diameter": 0.066, "width": 0.026}
-        elif "chassis" in name_lower or "body" in name_lower or "frame" in name_lower:
-            entry["dimensions"] = {"length": 0.20, "width": 0.15, "height": 0.05}
-        onshape_body["parts"].append(entry)
+    if onshape_body["parts"]:
+        simulator.update_from_onshape(onshape_body)
+    else:
+        print("[routes] No parts with dimensions found — sim params unchanged")
 
-    simulator.update_from_onshape(onshape_body)
+    # Build change list
+    changes = []
+    for key in simulator.params:
+        if old_params.get(key) != simulator.params[key]:
+            changes.append(f"{key}: {old_params.get(key)} -> {simulator.params[key]}")
 
     return {
-        "updated": True,
-        "params": simulator.params,
-        "parts_found": len(raw_parts),
+        "updated": bool(changes),
+        "updated_params": simulator.params,
+        "changes": changes,
+        "parts_found": len(entities),
+        "parts_with_dims": len(onshape_body["parts"]),
         "stl_loaded": [s["name"] for s in stl_parts],
-        "assembly_instances": len(parts_data),
     }
 
 
@@ -1130,6 +1153,7 @@ async def flash_arduino(body: FlashRequest):
     for pid, bench in list(live_benches.items()):
         if bench.serial_connection and bench.running:
             bench.stop()
+            del live_benches[pid]
             print(f"[routes] stopped live bench {pid} for flashing")
 
     result = await flasher.compile_and_upload(

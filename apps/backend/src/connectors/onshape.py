@@ -117,13 +117,19 @@ class OnshapeConnector:
                     "volume": body.get("volume", [0])[0] if isinstance(body.get("volume"), list) else body.get("volume"),
                 }
 
-        # Try to get bounding boxes for dimension info
-        bbox_data = self._get(f"/partstudios/d/{self.did}/w/{self.wid}/e/{eid}/boundingboxes")
+        # Fetch per-part bounding boxes (the studio-level endpoint is a single aggregate)
         bbox_by_part: dict[str, dict] = {}
-        if bbox_data and isinstance(bbox_data, dict):
-            for pid, box in bbox_data.items():
-                if isinstance(box, dict):
-                    bbox_by_part[pid] = box
+        for part in parts:
+            pid = part.get("partId", "")
+            if not pid:
+                continue
+            box = self._get(f"/parts/d/{self.did}/w/{self.wid}/e/{eid}/partid/{pid}/boundingboxes")
+            if box and isinstance(box, dict) and "lowX" in box:
+                bbox_by_part[pid] = {
+                    "minX": box["lowX"], "maxX": box["highX"],
+                    "minY": box["lowY"], "maxY": box["highY"],
+                    "minZ": box["lowZ"], "maxZ": box["highZ"],
+                }
 
         for part in parts:
             part_id = part.get("partId", "")

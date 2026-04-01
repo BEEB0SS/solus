@@ -25,6 +25,7 @@ interface BodyState {
   pos: number[]
   quat: number[]
   size?: number[]
+  type?: string
 }
 
 type ConnStatus = 'disconnected' | 'connecting' | 'connected'
@@ -38,15 +39,33 @@ const SIM_PARAM_DEFS = [
 
 // ── Three.js scene management ────────────────────────────────────────
 
+function createBodyMesh(name: string, body: BodyState): THREE.Mesh {
+  const sz = body.size || []
+  let geo: THREE.BufferGeometry
+  let mat: THREE.MeshStandardMaterial
+  if (name === 'chassis') {
+    geo = new THREE.BoxGeometry((sz[0] || 0.1) * 2, (sz[2] || 0.015) * 2, (sz[1] || 0.075) * 2)
+    mat = new THREE.MeshStandardMaterial({ color: 0x3344aa })
+  } else if (name.startsWith('wheel_')) {
+    geo = new THREE.CylinderGeometry(sz[0] || 0.033, sz[0] || 0.033, (sz[1] || 0.013) * 2, 16)
+    geo.rotateX(Math.PI / 2)
+    mat = new THREE.MeshStandardMaterial({ color: 0x333333 })
+  } else {
+    geo = new THREE.BoxGeometry((sz[0] || 0.1) * 2, (sz[2] || 0.05) * 2, (sz[1] || 0.1) * 2)
+    mat = new THREE.MeshStandardMaterial({ color: 0xcc3333, transparent: true, opacity: 0.8 })
+  }
+  return new THREE.Mesh(geo, mat)
+}
+
 function createScene(container: HTMLDivElement) {
   const width = container.clientWidth
-  const height = Math.min(400, container.clientHeight || 400)
+  const height = container.clientHeight || 400
 
   const scene = new THREE.Scene()
   scene.background = new THREE.Color(0x0a0a0f)
 
   const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 50)
-  camera.position.set(0, 2, 1.5)
+  camera.position.set(0.3, 0.8, 0.8)
   camera.lookAt(0, 0, 0)
 
   const renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -60,20 +79,20 @@ function createScene(container: HTMLDivElement) {
   controls.dampingFactor = 0.1
 
   // Lights
-  const dirLight = new THREE.DirectionalLight(0xcccccc, 1)
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1.5)
   dirLight.position.set(2, 5, 3)
   scene.add(dirLight)
-  scene.add(new THREE.AmbientLight(0x404050, 0.8))
+  scene.add(new THREE.AmbientLight(0x666680, 1.0))
 
   // Ground plane with grid
   const groundGeo = new THREE.PlaneGeometry(4, 4)
-  const groundMat = new THREE.MeshStandardMaterial({ color: 0x121218, roughness: 0.9 })
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0x1a1a24, roughness: 0.9 })
   const ground = new THREE.Mesh(groundGeo, groundMat)
   ground.rotation.x = -Math.PI / 2
   ground.position.y = -0.001
   scene.add(ground)
 
-  const grid = new THREE.GridHelper(4, 40, 0x1a1a2e, 0x1a1a2e)
+  const grid = new THREE.GridHelper(4, 40, 0x2a2a3e, 0x222235)
   scene.add(grid)
 
   // Trail line
@@ -151,48 +170,6 @@ export default function LiveBenchTab() {
   const serialConnected = mode === 'serial' && status === 'connected'
   const bothActive = pidRunning && serialConnected
 
-  // ── Three.js init ──
-  useEffect(() => {
-    if (!containerRef.current) return
-    const s = createScene(containerRef.current)
-    sceneRef.current = s
-
-    const animate = () => {
-      animIdRef.current = requestAnimationFrame(animate)
-      s.controls.update()
-      s.renderer.render(s.scene, s.camera)
-    }
-    animate()
-
-    const onResize = () => {
-      if (!containerRef.current) return
-      const w = containerRef.current.clientWidth
-      const h = Math.min(400, containerRef.current.clientHeight || 400)
-      s.camera.aspect = w / h
-      s.camera.updateProjectionMatrix()
-      s.renderer.setSize(w, h)
-    }
-    window.addEventListener('resize', onResize)
-
-    // Fetch initial state to create meshes
-    fetch(`/api/projects/${pid}/simulator/state`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.bodies) updateScene(data)
-        if (data.params) setSimParams(p => ({ ...p, ...data.params }))
-      })
-      .catch(() => {})
-
-    return () => {
-      cancelAnimationFrame(animIdRef.current)
-      window.removeEventListener('resize', onResize)
-      s.renderer.dispose()
-      if (containerRef.current && s.renderer.domElement.parentNode === containerRef.current) {
-        containerRef.current.removeChild(s.renderer.domElement)
-      }
-    }
-  }, [])
-
   // ── Update Three.js scene from backend state ──
   const updateScene = useCallback((state: { bodies?: Record<string, BodyState>, sensors?: Record<string, number> }) => {
     const s = sceneRef.current
@@ -200,38 +177,13 @@ export default function LiveBenchTab() {
 
     for (const [name, body] of Object.entries(state.bodies)) {
       let mesh = meshesRef.current[name]
-
       if (!mesh) {
-        // Create mesh on first encounter
-        let geo: THREE.BufferGeometry
-        let mat: THREE.MeshStandardMaterial
-
-        if (name === 'chassis') {
-          const p = simParams
-          geo = new THREE.BoxGeometry(p.chassis_length, p.chassis_height || 0.03, p.chassis_width)
-          mat = new THREE.MeshStandardMaterial({ color: 0x3344aa })
-        } else if (name.startsWith('wheel_')) {
-          const wr = simParams.wheel_radius
-          const ww = simParams.wheel_radius * 0.8
-          geo = new THREE.CylinderGeometry(wr, wr, ww, 16)
-          // Rotate cylinder so axis = Y in Three.js space
-          geo.rotateZ(Math.PI / 2)
-          mat = new THREE.MeshStandardMaterial({ color: 0x333333 })
-        } else if (name.startsWith('obstacle_')) {
-          const sz = body.size || [0.1, 0.1, 0.05]
-          geo = new THREE.BoxGeometry(sz[0] * 2, sz[2] * 2, sz[1] * 2)
-          mat = new THREE.MeshStandardMaterial({ color: 0xcc3333, transparent: true, opacity: 0.8 })
-        } else {
-          geo = new THREE.BoxGeometry(0.05, 0.05, 0.05)
-          mat = new THREE.MeshStandardMaterial({ color: 0x888888 })
-        }
-
-        mesh = new THREE.Mesh(geo, mat)
+        mesh = createBodyMesh(name, body)
         s.scene.add(mesh)
         meshesRef.current[name] = mesh
       }
-
-      applyMujocoTransform(mesh, body)
+      mesh.position.set(body.pos[0], body.pos[2], -body.pos[1])
+      mesh.quaternion.set(body.quat[1], body.quat[3], -body.quat[2], body.quat[0])
     }
 
     // Update trail
@@ -270,7 +222,80 @@ export default function LiveBenchTab() {
     if (state.sensors) {
       setSimSensors(state.sensors)
     }
-  }, [simParams])
+  }, [])
+
+  // ── Three.js init — single effect creates scene, meshes, and fetches state ──
+  useEffect(() => {
+    if (!containerRef.current) return
+
+    // Always start fresh
+    meshesRef.current = {}
+    trailCountRef.current = 0
+
+    const s = createScene(containerRef.current)
+    sceneRef.current = s
+
+    // Create all meshes immediately with default positions — guarantees they exist
+    const defaultBodies: Record<string, BodyState> = {
+      chassis: { pos: [0, 0, 0.049], quat: [1, 0, 0, 0], size: [0.1, 0.075, 0.015], type: 'box' },
+      wheel_fl: { pos: [0.05, 0.08, 0.034], quat: [1, 0, 0, 0], size: [0.033, 0.013], type: 'cylinder' },
+      wheel_fr: { pos: [0.05, -0.08, 0.034], quat: [1, 0, 0, 0], size: [0.033, 0.013], type: 'cylinder' },
+      wheel_rl: { pos: [-0.05, 0.08, 0.034], quat: [1, 0, 0, 0], size: [0.033, 0.013], type: 'cylinder' },
+      wheel_rr: { pos: [-0.05, -0.08, 0.034], quat: [1, 0, 0, 0], size: [0.033, 0.013], type: 'cylinder' },
+      obstacle_1: { pos: [0.5, 0, 0.05], quat: [1, 0, 0, 0], size: [0.1, 0.15, 0.05], type: 'box' },
+      obstacle_2: { pos: [-0.3, 0.4, 0.05], quat: [1, 0, 0, 0], size: [0.075, 0.075, 0.05], type: 'box' },
+      obstacle_3: { pos: [0.1, -0.5, 0.03], quat: [1, 0, 0, 0], size: [0.15, 0.05, 0.03], type: 'box' },
+      obstacle_4: { pos: [-0.5, -0.3, 0.05], quat: [1, 0, 0, 0], size: [0.05, 0.2, 0.05], type: 'box' },
+    }
+    for (const [name, body] of Object.entries(defaultBodies)) {
+      const mesh = createBodyMesh(name, body)
+      applyMujocoTransform(mesh, body)
+      s.scene.add(mesh)
+      meshesRef.current[name] = mesh
+    }
+
+    // Animation loop
+    const animate = () => {
+      animIdRef.current = requestAnimationFrame(animate)
+      s.controls.update()
+      s.renderer.render(s.scene, s.camera)
+    }
+    animate()
+
+    // Fetch real positions from backend and update
+    let cancelled = false
+    const projectId = pid || 'demo'
+    fetch(`/api/projects/${projectId}/simulator/state`)
+      .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json() })
+      .then(data => {
+        if (cancelled) return  // StrictMode: don't update if this mount was cleaned up
+        console.log('[sim] State loaded:', Object.keys(data.bodies || {}))
+        if (data.bodies) updateScene(data)
+        if (data.params) setSimParams(p => ({ ...p, ...data.params }))
+      })
+      .catch(e => { if (!cancelled) console.warn('[sim] Fetch failed, using defaults:', e) })
+
+    const observer = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect
+      if (width === 0 || height === 0) return
+      s.camera.aspect = width / height
+      s.camera.updateProjectionMatrix()
+      s.renderer.setSize(width, height)
+    })
+    observer.observe(containerRef.current)
+
+    return () => {
+      cancelAnimationFrame(animIdRef.current)
+      observer.disconnect()
+      s.renderer.dispose()
+      if (containerRef.current && s.renderer.domElement.parentNode === containerRef.current) {
+        containerRef.current.removeChild(s.renderer.domElement)
+      }
+      sceneRef.current = null
+      meshesRef.current = {}
+      cancelled = true
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Check Onshape source ──
   useEffect(() => {
@@ -432,22 +457,26 @@ export default function LiveBenchTab() {
 
   // ── Sim controls ──
   const handleManualCommand = useCallback(async (command: string) => {
+    const projectId = pid || 'demo'
     try {
-      const res = await fetch(`/api/projects/${pid}/simulator/manual`, {
+      const res = await fetch(`/api/projects/${projectId}/simulator/manual`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command }),
       })
+      if (!res.ok) { console.error('[sim] manual API error:', res.status); return }
       const state = await res.json()
+      console.log('[sim] WASD response:', command, 'chassis:', state?.bodies?.chassis?.pos, 'scene:', !!sceneRef.current, 'meshes:', Object.keys(meshesRef.current).length)
       updateScene(state)
-    } catch { /* */ }
+    } catch (e) { console.error('[sim] manual command failed:', e) }
   }, [pid, updateScene])
 
   const startPid = useCallback(async () => {
+    const projectId = pid || 'demo'
     // Reset trail
     trailCountRef.current = 0
 
-    await fetch(`/api/projects/${pid}/simulator/reset`, { method: 'POST' })
-    await fetch(`/api/projects/${pid}/simulator/start-pid`, {
+    await fetch(`/api/projects/${projectId}/simulator/reset`, { method: 'POST' })
+    await fetch(`/api/projects/${projectId}/simulator/start-pid`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kp: simParams.kp, kd: simParams.kd, target_distance: simParams.target_distance }),
     })
@@ -456,7 +485,7 @@ export default function LiveBenchTab() {
     // Poll /step every 100ms
     const iv = window.setInterval(async () => {
       try {
-        const res = await fetch(`/api/projects/${pid}/simulator/step`, { method: 'POST' })
+        const res = await fetch(`/api/projects/${projectId}/simulator/step`, { method: 'POST' })
         const state = await res.json()
         updateScene(state)
       } catch { /* */ }
@@ -468,7 +497,7 @@ export default function LiveBenchTab() {
     if (pidIntervalRef.current) window.clearInterval(pidIntervalRef.current)
     pidIntervalRef.current = 0
     setPidRunning(false)
-    await fetch(`/api/projects/${pid}/simulator/stop-pid`, { method: 'POST' }).catch(() => {})
+    await fetch(`/api/projects/${pid || 'demo'}/simulator/stop-pid`, { method: 'POST' }).catch(() => {})
     // Stop motors
     handleManualCommand('STOP')
   }, [pid, handleManualCommand])
@@ -478,7 +507,7 @@ export default function LiveBenchTab() {
     setPidRunning(false)
     trailCountRef.current = 0
     try {
-      const res = await fetch(`/api/projects/${pid}/simulator/reset`, { method: 'POST' })
+      const res = await fetch(`/api/projects/${pid || 'demo'}/simulator/reset`, { method: 'POST' })
       const state = await res.json()
       updateScene(state)
     } catch { /* */ }
@@ -496,7 +525,7 @@ export default function LiveBenchTab() {
       meshesRef.current = {}
     }
     try {
-      const res = await fetch(`/api/projects/${pid}/simulator/run`, {
+      const res = await fetch(`/api/projects/${pid || 'demo'}/simulator/run`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           wheel_radius: simParams.wheel_radius, chassis_length: simParams.chassis_length,
@@ -518,7 +547,7 @@ export default function LiveBenchTab() {
     setResyncing(true)
     setResyncMsg('')
     try {
-      const res = await fetch(`/api/projects/${pid}/simulator/update-from-onshape`, { method: 'POST' })
+      const res = await fetch(`/api/projects/${pid || 'demo'}/simulator/update-from-onshape`, { method: 'POST' })
       const data = await res.json()
       if (data.params) {
         const changes: string[] = []
@@ -675,7 +704,7 @@ export default function LiveBenchTab() {
 
       {/* Main panels */}
       <div className="flex flex-1 overflow-hidden">
-        {/* LEFT: SIMULATION (3D) */}
+        {/* LEFT: SIMULATION (3D) — hidden when serial is connected */}
         <div
           className={`flex-1 border-r border-solus-border overflow-y-auto p-3 focus:outline-none ${simPanelFocused ? 'ring-1 ring-solus-accent/30' : ''}`}
           tabIndex={0}
@@ -689,7 +718,7 @@ export default function LiveBenchTab() {
           </div>
 
           {/* Three.js container */}
-          <div ref={containerRef} className="w-full rounded border border-solus-border overflow-hidden" style={{ height: 350 }} />
+          <div ref={containerRef} className="w-full rounded border border-solus-border overflow-hidden" style={{ minHeight: 300, height: 'calc(100vh - 450px)', maxHeight: 600 }} />
 
           {/* Sensor readout */}
           <div className="mt-2 flex items-center gap-3 text-[10px] font-mono text-solus-text-muted bg-solus-bg border border-solus-border px-3 py-1.5">

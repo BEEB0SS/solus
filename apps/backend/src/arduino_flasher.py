@@ -13,15 +13,25 @@ class ArduinoFlasher:
     def __init__(self):
         self.sketch_dir = Path.home() / ".solus" / "sketches"
 
+    def _find_arduino_cli(self) -> str | None:
+        found = shutil.which("arduino-cli")
+        if found:
+            return found
+        for candidate in ("/opt/homebrew/bin/arduino-cli", "/usr/local/bin/arduino-cli"):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+
     def is_available(self) -> bool:
-        return shutil.which("arduino-cli") is not None
+        return self._find_arduino_cli() is not None
 
     def list_boards(self) -> list[dict]:
-        if not self.is_available():
+        arduino_cli = self._find_arduino_cli()
+        if not arduino_cli:
             return []
         try:
             result = subprocess_run(
-                ["arduino-cli", "board", "list", "--format", "json"],
+                [arduino_cli, "board", "list", "--format", "json"],
             )
             if result.returncode == 0:
                 data = json.loads(result.stdout)
@@ -42,7 +52,8 @@ class ArduinoFlasher:
 
     async def compile_and_upload(self, name: str, code: str,
                                   port: str = "", fqbn: str = "arduino:avr:uno") -> dict:
-        if not self.is_available():
+        arduino_cli = self._find_arduino_cli()
+        if not arduino_cli:
             return {"success": False, "stage": "check", "output": "", "errors": "arduino-cli not found"}
 
         # Auto-detect port if not specified
@@ -57,7 +68,7 @@ class ArduinoFlasher:
         # Compile
         try:
             proc = await asyncio.create_subprocess_exec(
-                "arduino-cli", "compile", "--fqbn", fqbn, sketch_dir,
+                arduino_cli, "compile", "--fqbn", fqbn, sketch_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -79,7 +90,7 @@ class ArduinoFlasher:
         # Upload
         try:
             proc = await asyncio.create_subprocess_exec(
-                "arduino-cli", "upload", "--fqbn", fqbn, "--port", port, sketch_dir,
+                arduino_cli, "upload", "--fqbn", fqbn, "--port", port, sketch_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -106,13 +117,24 @@ class ArduinoFlasher:
         }
 
     def _auto_detect_port(self) -> str:
-        from .live_bench import LiveBench
-        ports = LiveBench.list_serial_ports()
-        for p in ports:
-            if p.get("is_arduino"):
-                return p["port"]
-        if ports:
-            return ports[0]["port"]
+        try:
+            import serial.tools.list_ports
+        except ImportError:
+            return ""
+        for p in serial.tools.list_ports.comports():
+            desc = (p.description or "").lower()
+            dev = (p.device or "").lower()
+            if "bluetooth" in desc or "debug" in desc or "bluetooth" in dev or "debug" in dev:
+                continue
+            if p.vid == 0x1A86 or p.vid == 0x2341 or "ch340" in desc or "arduino" in desc:
+                return p.device
+        # Fallback: first non-bluetooth port
+        for p in serial.tools.list_ports.comports():
+            desc = (p.description or "").lower()
+            dev = (p.device or "").lower()
+            if "bluetooth" in desc or "debug" in desc or "bluetooth" in dev or "debug" in dev:
+                continue
+            return p.device
         return ""
 
 

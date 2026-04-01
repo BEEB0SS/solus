@@ -278,10 +278,24 @@ class LiveBench:
 
     # ── Serial Connection ─────────────────────────────────────────────
 
-    async def start_serial(self, port: str = "/dev/ttyUSB0", baud: int = 9600):
+    async def start_serial(self, port: str = "", baud: int = 9600):
         if not SERIAL_AVAILABLE:
             print("[live_bench] pyserial not available")
             return
+
+        # Auto-detect port if not specified
+        if not port:
+            detected = self.list_serial_ports()
+            for p in detected:
+                if p.get("is_arduino"):
+                    port = p["device"]
+                    break
+            if not port and detected:
+                port = detected[0]["device"]
+            if not port:
+                print("[live_bench] no serial port detected")
+                return
+            print(f"[live_bench] auto-detected port: {port}")
 
         self.running = True
         loop = asyncio.get_event_loop()
@@ -296,7 +310,12 @@ class LiveBench:
 
         # Arduino resets on serial open — wait for boot
         await asyncio.sleep(3)
-        self.serial_connection.reset_input_buffer()
+        # Drain CH340 buffer fully — reset_input_buffer() misses the USB chip buffer on macOS
+        self.serial_connection.timeout = 0.1
+        while self.serial_connection.read(4096):
+            pass
+        self.serial_connection.timeout = 1
+        print("[live_bench] serial buffer drained")
 
         while self.running:
             try:
