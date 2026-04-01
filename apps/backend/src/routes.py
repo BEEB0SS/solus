@@ -171,6 +171,10 @@ class SimRunRequest(BaseModel):
     dt: float = 0.002
     kp: float = 2.0
     target_dist: float = 0.25
+    wheel_radius: float | None = None
+    chassis_length: float | None = None
+    chassis_width: float | None = None
+    motor_torque: float | None = None
 
 class SimParamUpdate(BaseModel):
     name: str
@@ -915,8 +919,18 @@ async def ws_live_bench(websocket: WebSocket, project_id: str):
 async def run_simulation(project_id: str, body: SimRunRequest):
     if not simulator:
         raise HTTPException(503, "Simulator unavailable")
+    extra = {}
+    if body.wheel_radius is not None:
+        extra["wheel_radius"] = body.wheel_radius
+    if body.chassis_length is not None:
+        extra["chassis_length"] = body.chassis_length
+    if body.chassis_width is not None:
+        extra["chassis_width"] = body.chassis_width
+    if body.motor_torque is not None:
+        extra["motor_torque"] = body.motor_torque
     result = await simulator.run_simulation(
         n_steps=body.n_steps, dt=body.dt, kp=body.kp, target_dist=body.target_dist,
+        **extra,
     )
     # Store run in DB
     conn = get_connection()
@@ -1055,11 +1069,44 @@ async def update_sim_from_onshape(project_id: str, body: dict):
 async def get_sim_state(project_id: str):
     if not simulator:
         return {"available": False}
-    return {
-        "available": True,
-        "mujoco": simulator.available,
-        "params": simulator.params,
-    }
+    state = simulator.get_state()
+    state["available"] = True
+    state["params"] = simulator.params
+    state["pid_running"] = simulator.pid_running
+    return state
+
+
+@router.post("/api/projects/{project_id}/simulator/step")
+async def sim_pid_step(project_id: str):
+    """Single PID step — returns full body state for Three.js."""
+    if not simulator:
+        raise HTTPException(503, "Simulator unavailable")
+    state = simulator.run_pid_step()
+    return state
+
+
+@router.post("/api/projects/{project_id}/simulator/start-pid")
+async def sim_start_pid(project_id: str, req: dict = None):
+    """Mark PID as running. Frontend polls /step to advance."""
+    if not simulator:
+        raise HTTPException(503, "Simulator unavailable")
+    params = req or {}
+    if "kp" in params:
+        simulator.params["kp"] = float(params["kp"])
+    if "kd" in params:
+        simulator.params["kd"] = float(params["kd"])
+    if "target_distance" in params:
+        simulator.params["target_distance"] = float(params["target_distance"])
+    simulator.start_pid()
+    return {"pid_running": True, "params": simulator.params}
+
+
+@router.post("/api/projects/{project_id}/simulator/stop-pid")
+async def sim_stop_pid(project_id: str):
+    if not simulator:
+        raise HTTPException(503, "Simulator unavailable")
+    simulator.stop_pid()
+    return {"pid_running": False}
 
 
 @router.post("/api/projects/{project_id}/simulator/compare")
