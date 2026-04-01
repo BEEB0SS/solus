@@ -34,6 +34,10 @@ Servo headServo;
 float KP = 2.0;   // FIXED: stable proportional gain
 float KD = 0.5;   // FIXED: derivative damping prevents oscillation
 
+// Auto-stop after demo duration
+unsigned long pidStartTime = 0;
+#define PID_DURATION 10000  // 10 seconds
+
 // State
 bool pidRunning = false;
 bool manualOverride = false;
@@ -111,6 +115,7 @@ void handleCommands() {
 
   if (cmd == "START") {
     pidRunning = true;
+    pidStartTime = millis();
     pidError = 0;
     pidLastError = 0;
   }
@@ -186,6 +191,14 @@ void loop() {
   if (manualOverride && millis() > manualExpiry) {
     manualOverride = false;
     stopMotors();
+    leftPWM = 0;
+    rightPWM = 0;
+  }
+
+  // Auto-stop after PID_DURATION
+  if (pidRunning && millis() - pidStartTime > PID_DURATION) {
+    pidRunning = false;
+    driveMotors(0, 0);
     leftPWM = 0;
     rightPWM = 0;
   }

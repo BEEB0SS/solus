@@ -465,17 +465,20 @@ class LiveBench:
     def list_serial_ports() -> list[dict]:
         if not SERIAL_AVAILABLE:
             return []
+        all_ports = serial.tools.list_ports.comports()
+        print(f"[ports] found: {[p.device for p in all_ports]}")
         ports = []
-        for p in serial.tools.list_ports.comports():
+        for p in all_ports:
             desc = (p.description or "").lower()
             dev = (p.device or "").lower()
-            if "bluetooth" in desc or "debug" in desc or "bluetooth" in dev or "debug" in dev:
+            # Only skip Bluetooth ports
+            if "bluetooth" in desc or "bluetooth" in dev:
                 continue
             is_arduino = (
-                (p.vid == 0x1A86) or
-                (p.vid == 0x2341) or
-                "ch340" in desc or
-                "arduino" in desc
+                p.vid == 0x1A86 or          # CH340
+                p.vid == 0x2341 or          # Official Arduino
+                "usb" in dev or
+                "serial" in desc
             )
             ports.append({
                 "device": p.device,
@@ -485,5 +488,6 @@ class LiveBench:
                 "pid": p.pid,
                 "is_arduino": is_arduino,
             })
-        ports.sort(key=lambda x: not x["is_arduino"])
+        # Arduino-flagged ports first, then alphabetical
+        ports.sort(key=lambda x: (not x["is_arduino"], x["device"]))
         return ports

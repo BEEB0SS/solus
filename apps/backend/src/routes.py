@@ -953,14 +953,14 @@ async def sim_manual_control(project_id: str, req: dict):
         raise HTTPException(503, "Simulator unavailable")
     command = req.get("command", "")
     motor_map = {
-        "FORWARD": (0.5, 0.5),
-        "REVERSE": (-0.5, -0.5),
-        "LEFT": (-0.3, 0.3),
-        "RIGHT": (0.3, -0.3),
+        "FORWARD": (1.0, 1.0),
+        "REVERSE": (-1.0, -1.0),
+        "LEFT": (-0.6, 0.6),
+        "RIGHT": (0.6, -0.6),
         "STOP": (0.0, 0.0),
     }
     left, right = motor_map.get(command.upper(), (0.0, 0.0))
-    result = simulator.step_manual(left, right, n_steps=200)
+    result = simulator.step_manual(left, right, n_steps=500)
     return result
 
 

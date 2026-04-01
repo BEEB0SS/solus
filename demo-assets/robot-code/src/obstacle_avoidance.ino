@@ -37,6 +37,7 @@ float KD = 0.0;   // BUG: should be ~0.5
 // State
 bool pidRunning = false;
 bool manualOverride = false;
+unsigned long manualExpiry = 0;
 float pidError = 0.0;
 float pidLastError = 0.0;
 int leftPWM = 0;
@@ -130,31 +131,27 @@ void handleCommands() {
   }
   else if (cmd == "FORWARD") {
     manualOverride = true;
-    driveMotors(153, 153);  // 60% of 255
-    delay(400);
-    stopMotors();
-    manualOverride = false;
+    manualExpiry = millis() + 500;
+    leftPWM = 153; rightPWM = 153;
+    driveMotors(leftPWM, rightPWM);
   }
   else if (cmd == "REVERSE") {
     manualOverride = true;
-    driveMotors(-153, -153);
-    delay(400);
-    stopMotors();
-    manualOverride = false;
+    manualExpiry = millis() + 500;
+    leftPWM = -153; rightPWM = -153;
+    driveMotors(leftPWM, rightPWM);
   }
   else if (cmd == "LEFT") {
     manualOverride = true;
-    driveMotors(-128, 128);  // 50% of 255
-    delay(300);
-    stopMotors();
-    manualOverride = false;
+    manualExpiry = millis() + 500;
+    leftPWM = -128; rightPWM = 128;
+    driveMotors(leftPWM, rightPWM);
   }
   else if (cmd == "RIGHT") {
     manualOverride = true;
-    driveMotors(128, -128);
-    delay(300);
-    stopMotors();
-    manualOverride = false;
+    manualExpiry = millis() + 500;
+    leftPWM = 128; rightPWM = -128;
+    driveMotors(leftPWM, rightPWM);
   }
 }
 
@@ -185,6 +182,14 @@ void setup() {
 void loop() {
   handleCommands();
 
+  // Auto-expire manual override after timeout
+  if (manualOverride && millis() > manualExpiry) {
+    manualOverride = false;
+    stopMotors();
+    leftPWM = 0;
+    rightPWM = 0;
+  }
+
   long dist = readDistance();
 
   if (pidRunning && !manualOverride && dist > 0 && dist < 100) {
@@ -207,34 +212,19 @@ void loop() {
     rightPWM = 0;
   }
 
-  // Telemetry at 10Hz
-  if (millis() - lastTelemetry >= 100) {
+  // Telemetry at 5Hz — compact CSV to avoid TX buffer blocking
+  if (millis() - lastTelemetry >= 200) {
     lastTelemetry = millis();
 
-    Serial.print(F("{\"signals\":["));
-    Serial.print(F("{\"name\":\"distance_cm\",\"value\":"));
-    Serial.print(dist);
-    Serial.print(F(",\"unit\":\"cm\"},"));
-    Serial.print(F("{\"name\":\"left_motor\",\"value\":"));
-    Serial.print(leftPWM / 255.0, 3);
-    Serial.print(F(",\"unit\":\"norm\"},"));
-    Serial.print(F("{\"name\":\"right_motor\",\"value\":"));
-    Serial.print(rightPWM / 255.0, 3);
-    Serial.print(F(",\"unit\":\"norm\"},"));
-    Serial.print(F("{\"name\":\"pid_error\",\"value\":"));
-    Serial.print(pidError, 2);
-    Serial.print(F(",\"unit\":\"\"},"));
-    Serial.print(F("{\"name\":\"kp_value\",\"value\":"));
-    Serial.print(KP, 1);
-    Serial.print(F(",\"unit\":\"\"},"));
-    Serial.print(F("{\"name\":\"kd_value\",\"value\":"));
-    Serial.print(KD, 1);
-    Serial.print(F(",\"unit\":\"\"},"));
-    Serial.print(F("{\"name\":\"running\",\"value\":"));
-    Serial.print(pidRunning ? 1 : 0);
-    Serial.print(F(",\"unit\":\"\"},"));
-    Serial.print(F("{\"name\":\"bug_active\",\"value\":1,\"unit\":\"\"}"));
-    Serial.println(F("]}"));
+    Serial.print(F("distance_cm="));  Serial.print(dist);
+    Serial.print(F(",left_motor="));  Serial.print(leftPWM / 255.0, 3);
+    Serial.print(F(",right_motor=")); Serial.print(rightPWM / 255.0, 3);
+    Serial.print(F(",pid_error="));   Serial.print(pidError, 2);
+    Serial.print(F(",kp_value="));    Serial.print(KP, 1);
+    Serial.print(F(",kd_value="));    Serial.print(KD, 1);
+    Serial.print(F(",running="));     Serial.print(pidRunning ? 1 : 0);
+    Serial.print(F(",bug_active=1"));
+    Serial.println();
   }
 
   delay(10);

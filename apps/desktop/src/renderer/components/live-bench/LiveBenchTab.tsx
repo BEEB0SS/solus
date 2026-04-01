@@ -130,6 +130,7 @@ export default function LiveBenchTab() {
   // Connection state
   const [status, setStatus] = useState<ConnStatus>('disconnected')
   const [mode, setMode] = useState('simulated')
+  const [connectionMode, setConnectionMode] = useState<'simulated' | 'serial' | null>(null)
   const [port, setPort] = useState('')
   const [baud, setBaud] = useState('9600')
   const [ports, setPorts] = useState<any[]>([])
@@ -149,6 +150,12 @@ export default function LiveBenchTab() {
   const [simSensors, setSimSensors] = useState<Record<string, number>>({})
   const [pidRunning, setPidRunning] = useState(false)
   const [simPanelFocused, setSimPanelFocused] = useState(false)
+
+  // Anomaly auto-detection
+  const [showErrorBanner, setShowErrorBanner] = useState(false)
+  const [errorBannerSent, setErrorBannerSent] = useState(false)
+  const [errorSummary, setErrorSummary] = useState('')
+  const anomalyCountRef = useRef(0)
 
   // Comparison state
   const [comparison, setComparison] = useState<CompareRow[]>([])
@@ -307,13 +314,14 @@ export default function LiveBenchTab() {
     try {
       const res = await fetch('/api/serial-ports')
       const data = await res.json()
+      console.log('[live-bench] Ports fetched:', data.length, data.map((p: any) => p.device))
       setPorts(data)
       const arduino = data.find((p: any) => p.is_arduino)
       if (arduino && !port) setPort(arduino.device)
-    } catch { /* */ }
+    } catch (e) { console.error('[live-bench] Port fetch failed:', e) }
   }, [port])
 
-  useEffect(() => { fetchPorts() }, [])
+  useEffect(() => { fetchPorts() }, [mode, fetchPorts])
 
   // ── Poll telemetry when connected ──
   useEffect(() => {
@@ -364,33 +372,39 @@ export default function LiveBenchTab() {
 
   // ── Connect / disconnect ──
   const connect = async () => {
+    const projectId = pid || 'demo'
     setStatus('connecting')
+    setConnectionMode(mode as 'simulated' | 'serial')
     setAnomalies([])
     setSignals({})
     signalsRef.current = {}
 
     try {
-      await fetch(`/api/projects/${pid}/live-bench/start`, {
+      const startRes = await fetch(`/api/projects/${projectId}/live-bench/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode, port, baud: parseInt(baud) }),
       })
-    } catch { /* */ }
+      console.log('[live-bench] start response:', startRes.status)
+    } catch (e) { console.error('[live-bench] start failed:', e) }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/projects/${pid}/live-bench`)
+    const wsUrl = `${protocol}//${window.location.host}/ws/projects/${projectId}/live-bench`
+    console.log('[live-bench] connecting WS:', wsUrl)
+    const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
     ws.onopen = () => {
+      console.log('[live-bench] WS connected')
       setStatus('connected')
       setTimeout(async () => {
         try {
-          const disc = await store.discoverDevices(pid)
+          const disc = await store.discoverDevices(projectId)
           if (disc.discovered_peripherals?.length) {
             setDiscoveryBanner(`Discovered: ${disc.discovered_peripherals.join(', ')}`)
             setTimeout(() => setDiscoveryBanner(''), 10000)
           }
-          store.fetchGraph(pid)
+          store.fetchGraph(projectId)
         } catch { /* */ }
       }, 2000)
     }
@@ -417,27 +431,53 @@ export default function LiveBenchTab() {
             return next
           })
         }
-        if (data.anomalies?.length) setAnomalies(prev => [...data.anomalies, ...prev].slice(0, 100))
-        if (data.event === 'disconnected') { setStatus('disconnected'); setSignals({}); signalsRef.current = {}; setAnomalies([]) }
+        if (data.anomalies?.length) {
+          const newAnomalies = data.anomalies
+          setAnomalies(prev => [...newAnomalies, ...prev].slice(0, 100))
+          // Track pattern anomalies for auto-detection (serial mode only)
+          if (connectionMode === 'serial') {
+            const patternCount = newAnomalies.filter((a: any) => a.pattern_type).length
+            if (patternCount >= 1) {
+              anomalyCountRef.current += 1
+            }
+            if (anomalyCountRef.current >= 3 && !showErrorBanner) {
+              const patternTypes = newAnomalies
+                .filter((a: any) => a.pattern_type)
+                .map((a: any) => (a.pattern_type as string).replace(/_/g, ' '))
+              const uniqueTypes = [...new Set(patternTypes)] as string[]
+              setErrorSummary(uniqueTypes.length > 0
+                ? `Detected on robot: ${uniqueTypes.join(', ')}`
+                : 'Multiple anomalies detected on the connected device')
+              setShowErrorBanner(true)
+              setErrorBannerSent(false)
+            }
+          }
+        }
+        if (data.event === 'disconnected') { setStatus('disconnected'); setConnectionMode(null); setSignals({}); signalsRef.current = {}; setAnomalies([]); setShowErrorBanner(false); anomalyCountRef.current = 0 }
         if (data.event === 'code_flashed') { setFlashBanner(true); setTimeout(() => setFlashBanner(false), 15000) }
       } catch { /* */ }
     }
-    ws.onclose = () => { if (status === 'connected') setStatus('disconnected') }
+    ws.onerror = (e) => { console.error('[live-bench] WS error:', e) }
+    ws.onclose = (e) => { console.log('[live-bench] WS closed:', e.code, e.reason); if (status === 'connected') setStatus('disconnected') }
   }
 
   const disconnect = () => {
     if (wsRef.current) { wsRef.current.onmessage = null; wsRef.current.close(); wsRef.current = null }
-    fetch(`/api/projects/${pid}/live-bench/stop`, { method: 'POST' }).catch(() => {})
+    fetch(`/api/projects/${pid || 'demo'}/live-bench/stop`, { method: 'POST' }).catch(() => {})
     setStatus('disconnected')
+    setConnectionMode(null)
     setSignals({})
     signalsRef.current = {}
     setAnomalies([])
     setDiscoveryBanner('')
     setFlashBanner(false)
+    setShowErrorBanner(false)
+    setErrorBannerSent(false)
+    anomalyCountRef.current = 0
   }
 
   const sendCommand = (cmd: string) => {
-    fetch(`/api/projects/${pid}/live-bench/command`, {
+    fetch(`/api/projects/${pid || 'demo'}/live-bench/command`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command: cmd }),
     }).catch(() => {})
@@ -445,13 +485,14 @@ export default function LiveBenchTab() {
 
   const sendLogsToAgent = async () => {
     try {
-      const res = await fetch(`/api/projects/${pid}/live-bench/logs`)
+      const res = await fetch(`/api/projects/${pid || 'demo'}/live-bench/logs`)
       const data = await res.json()
       localStorage.setItem('solus_agent_context', JSON.stringify({
         source: 'live_bench', logs: data, timestamp: Date.now(),
         prompt: 'Robot anomalies detected. ' + (data.report || '') + '\nAnalyze the robot code, identify the bug, and generate corrected code.',
       }))
-      alert('Logs sent \u2014 switch to Intelligence tab')
+      setErrorBannerSent(true)
+      setErrorSummary('Logs sent \u2014 switch to Intelligence tab to see the diagnosis')
     } catch { /* */ }
   }
 
@@ -674,6 +715,32 @@ export default function LiveBenchTab() {
         <span className="text-[10px] font-mono text-solus-text-muted">{signalCount} signals · {anomalyCount} anomalies</span>
       </div>
 
+      {/* Auto-detected anomaly banner (serial mode only) */}
+      {showErrorBanner && (
+        <div className={`${errorBannerSent ? 'bg-green-600/15 border-green-500/30' : 'bg-solus-error/15 border-solus-error/30'} border rounded-lg mx-3 mt-2 p-3 flex items-center justify-between`}>
+          <div>
+            <div className={`${errorBannerSent ? 'text-green-400' : 'text-solus-error'} font-semibold text-sm flex items-center gap-2`}>
+              <AlertTriangle size={16} />
+              {errorBannerSent ? 'Logs Sent to Intelligence' : 'Robot Anomaly Detected'}
+            </div>
+            <div className="text-solus-text-dim text-xs mt-1">
+              {errorBannerSent ? 'Switch to the Intelligence tab to see the diagnosis' : errorSummary}
+            </div>
+          </div>
+          {!errorBannerSent ? (
+            <button onClick={sendLogsToAgent}
+              className="bg-solus-accent text-white px-4 py-2 rounded text-sm font-medium hover:bg-solus-accent-bright shrink-0 ml-3">
+              Send Logs to Agent →
+            </button>
+          ) : (
+            <button onClick={() => setShowErrorBanner(false)}
+              className="text-solus-text-muted hover:text-solus-text text-xs font-mono px-2 py-1 shrink-0 ml-3">
+              Dismiss
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Serial controls */}
       {mode === 'serial' && status === 'connected' && (
         <div className="bg-solus-surface/50 border-b border-solus-border p-2 flex items-center gap-2">
@@ -732,7 +799,7 @@ export default function LiveBenchTab() {
           <div className="mt-2 flex items-center gap-2 flex-wrap">
             {!pidRunning ? (
               <button onClick={startPid} className="flex items-center gap-1 bg-solus-success/20 hover:bg-solus-success/30 text-solus-success text-[10px] font-mono px-3 py-1.5 rounded">
-                <Play size={10} /> Start PID
+                <Play size={10} /> Run
               </button>
             ) : (
               <button onClick={stopPid} className="flex items-center gap-1 bg-solus-error/20 hover:bg-solus-error/30 text-solus-error text-[10px] font-mono px-3 py-1.5 rounded">
@@ -874,22 +941,31 @@ export default function LiveBenchTab() {
               <Clipboard size={11} /> Send Logs to Agent
             </button>
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
-              {anomalies.map((a: any, i: number) => (
-                <div key={a.id || i} className="bg-solus-elevated border border-solus-border rounded-lg p-2.5 space-y-1">
+              {/* Pattern anomalies first, with red accent */}
+              {anomalies.filter((a: any) => a.pattern_type).map((a: any, i: number) => (
+                <div key={`p-${a.id || i}`} className="bg-solus-elevated border-l-2 border-l-solus-error border border-solus-border rounded-lg p-2.5 space-y-1">
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                      a.severity === 'error' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'
-                    }`}>{(a.severity || 'warn').toUpperCase()}</span>
-                    {a.pattern_type && (
-                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-solus-accent/15 text-solus-accent-bright">
-                        {a.pattern_type.toUpperCase().replace(/_/g, '-')}
-                      </span>
-                    )}
+                    <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">PATTERN</span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-solus-accent/15 text-solus-accent-bright">
+                      {a.pattern_type.toUpperCase().replace(/_/g, '-')}
+                    </span>
                   </div>
                   {a.signal_name && <div className="text-[10px] font-mono text-solus-text">{a.signal_name}</div>}
                   {a.description && <div className="text-[10px] text-solus-text-dim leading-snug">{a.description}</div>}
                   {a.evidence && <div className="text-[9px] font-mono text-solus-text-muted">evidence: {a.evidence}</div>}
                   {a.expected && <div className="text-[9px] font-mono text-solus-text-muted">expected: {a.expected}</div>}
+                </div>
+              ))}
+              {/* Threshold/other anomalies below, dimmer */}
+              {anomalies.filter((a: any) => !a.pattern_type).map((a: any, i: number) => (
+                <div key={`t-${a.id || i}`} className="bg-solus-elevated border border-solus-border rounded-lg p-2.5 space-y-1 opacity-70">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                      a.severity === 'error' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'
+                    }`}>{(a.severity || 'warn').toUpperCase()}</span>
+                  </div>
+                  {a.signal_name && <div className="text-[10px] font-mono text-solus-text">{a.signal_name}</div>}
+                  {a.description && <div className="text-[10px] text-solus-text-dim leading-snug">{a.description}</div>}
                 </div>
               ))}
               {anomalyCount === 0 && <div className="text-[10px] font-mono text-solus-text-muted py-6 text-center">No anomalies detected</div>}
