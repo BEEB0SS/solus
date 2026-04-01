@@ -1,9 +1,11 @@
 """
 Solus GitHub / local repo connector.
 Walks a local repo, classifies files, builds entities and relations.
+Supports both local paths and GitHub URLs (clones to ~/.solus/repos/).
 """
 
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'packages', 'shared-types', 'src'))
@@ -15,11 +17,35 @@ SKIP_DIRS = {'.git', 'node_modules', '__pycache__', 'build', 'devel', '.venv', '
 CODE_EXTENSIONS = {'.py', '.cpp', '.c', '.h', '.ino', '.launch', '.urdf', '.xacro',
                    '.yaml', '.yml', '.json', '.msg', '.srv', '.cfg'}
 
+REPOS_DIR = os.path.join(os.path.expanduser("~"), ".solus", "repos")
+
 
 class GitHubConnector:
-    def __init__(self, repo_path: str, project_id: str):
-        self.repo_path = os.path.abspath(repo_path)
+    def __init__(self, url_or_path: str, project_id: str):
         self.project_id = project_id
+        self.repo_path = self._resolve_path(url_or_path)
+
+    def _resolve_path(self, url_or_path: str) -> str:
+        # If it looks like a URL, clone or pull
+        if url_or_path.startswith("http://") or url_or_path.startswith("https://") or url_or_path.startswith("git@"):
+            repo_name = url_or_path.rstrip("/").split("/")[-1].removesuffix(".git")
+            local_path = os.path.join(REPOS_DIR, repo_name)
+            os.makedirs(REPOS_DIR, exist_ok=True)
+
+            if os.path.isdir(os.path.join(local_path, ".git")):
+                # Already cloned — pull latest
+                print(f"[github] pulling {repo_name}")
+                subprocess.run(["git", "-C", local_path, "pull", "--ff-only"],
+                               capture_output=True, timeout=60)
+            else:
+                # Fresh clone
+                print(f"[github] cloning {url_or_path} → {local_path}")
+                subprocess.run(["git", "clone", url_or_path, local_path],
+                               capture_output=True, timeout=120)
+            return local_path
+
+        # Local path
+        return os.path.abspath(url_or_path)
 
     def ingest(self) -> dict:
         items = []

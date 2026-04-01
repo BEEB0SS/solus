@@ -51,6 +51,15 @@ try:
 except Exception:
     simulator = None
 
+try:
+    from .cross_domain_linker import CrossDomainLinker, DeviceDiscovery
+    linker = CrossDomainLinker(context_engine) if context_engine else None
+    discovery = DeviceDiscovery(context_engine) if context_engine else None
+except Exception as e:
+    print(f"[warn] Linker/Discovery unavailable: {e}")
+    linker = None
+    discovery = None
+
 live_benches: dict[str, LiveBench] = {}
 flasher = ArduinoFlasher()
 
@@ -65,13 +74,13 @@ def build_signal_entity_map(project_id: str) -> dict[str, list[str]]:
     if not context_engine:
         return mapping
     try:
-        entities = context_engine.get_entities(project_id)
+        entities = context_engine.get_entities_by_project(project_id)
         for e in entities:
-            etype = e.get("entity_type", "") if isinstance(e, dict) else getattr(e, "entity_type", "")
-            eid = e.get("id", "") if isinstance(e, dict) else getattr(e, "id", "")
-            name = (e.get("name", "") if isinstance(e, dict) else getattr(e, "name", "")).lower()
+            etype = e.entity_type.value if isinstance(e.entity_type, EntityType) else e.entity_type
+            eid = e.id
+            name = e.name.lower()
 
-            if "motor" in name or etype in ("electrical_part",) and "tb6612" in name.lower():
+            if "motor" in name or (etype == "electrical_part" and "tb6612" in name):
                 mapping.setdefault("left_motor", []).append(eid)
                 mapping.setdefault("right_motor", []).append(eid)
             if "ultrasonic" in name or "hc-sr04" in name:
@@ -101,6 +110,7 @@ async def broadcast_ws(project_id: str, msg: dict):
 class ProjectCreate(BaseModel):
     name: str
     description: str = ""
+    id: str = ""
 
 class EntityCreate(BaseModel):
     entity_type: str
@@ -117,7 +127,7 @@ class RelationCreate(BaseModel):
     metadata: dict = {}
     confidence: float = 1.0
 
-class TeamMemberCreate(BaseModel):
+class AddTeamMemberRequest(BaseModel):
     name: str
     role: str = ""
     email: str = ""
@@ -187,6 +197,8 @@ async def health():
 @router.post("/api/projects")
 async def create_project(body: ProjectCreate):
     p = Project(name=body.name, description=body.description)
+    if body.id:
+        p.id = body.id
     conn = get_connection()
     conn.execute(
         "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?,?,?,?,?)",
@@ -219,20 +231,31 @@ async def get_project(project_id: str):
 # ── Team ──────────────────────────────────────────────────────────────
 
 @router.post("/api/projects/{project_id}/team")
-async def add_team_member(project_id: str, body: TeamMemberCreate):
-    m = TeamMember(project_id=project_id, name=body.name, role=body.role, email=body.email)
+async def add_team_member(project_id: str, req: AddTeamMemberRequest):
     conn = get_connection()
+    member_id = str(__import__('uuid').uuid4())
+    now = __import__('datetime').datetime.utcnow().isoformat()
     conn.execute(
         "INSERT INTO team_members (id, project_id, name, role, email) VALUES (?,?,?,?,?)",
-        (m.id, m.project_id, m.name, m.role, m.email),
+        (member_id, project_id, req.name, req.role, req.email),
     )
     conn.commit()
     conn.close()
-    return {"id": m.id, "name": m.name, "role": m.role, "email": m.email}
+
+    # Broadcast team activity
+    for pid, bench in live_benches.items():
+        if pid == project_id:
+            for listener in bench.listeners:
+                try:
+                    await listener({"event": "team_activity", "user": req.name, "action": "joined the team"})
+                except:
+                    pass
+
+    return {"id": member_id, "project_id": project_id, "name": req.name, "role": req.role, "email": req.email}
 
 
 @router.get("/api/projects/{project_id}/team")
-async def list_team(project_id: str):
+async def get_team(project_id: str):
     conn = get_connection()
     rows = conn.execute("SELECT * FROM team_members WHERE project_id=?", (project_id,)).fetchall()
     conn.close()
@@ -254,7 +277,15 @@ async def add_source(project_id: str, body: SourceCreate):
     )
     conn.commit()
     conn.close()
-    return {"id": sc.id, "source_type": sc.source_type.value, "name": sc.name, "status": sc.status}
+    return {
+        "id": sc.id,
+        "project_id": sc.project_id,
+        "source_type": sc.source_type.value,
+        "name": sc.name,
+        "config": sc.config,
+        "status": sc.status,
+        "last_synced_at": sc.last_synced_at,
+    }
 
 
 @router.get("/api/projects/{project_id}/sources")
@@ -274,107 +305,168 @@ async def list_sources(project_id: str):
 
 @router.post("/api/projects/{project_id}/sources/{source_id}/sync")
 async def sync_source(project_id: str, source_id: str):
+    # 1. Load source from DB
     conn = get_connection()
     row = conn.execute("SELECT * FROM source_connections WHERE id=? AND project_id=?",
                        (source_id, project_id)).fetchone()
+    conn.close()
     if not row:
-        conn.close()
         raise HTTPException(404, "Source not found")
     source = dict(row)
-    source["config"] = json.loads(source.get("config", "{}"))
+    config = json.loads(source.get("config", "{}"))
     source_type = source["source_type"]
-    conn.close()
 
-    # Dispatch to connector
+    # 2. Dispatch to connector
     connector = None
     try:
         if source_type == "github":
-            from .connectors.github_connector import GitHubConnector
-            connector = GitHubConnector(source["config"])
+            from .connectors.github import GitHubConnector
+            path_or_url = config.get("url") or config.get("path", "")
+            connector = GitHubConnector(path_or_url, project_id)
         elif source_type == "kicad":
-            from .connectors.kicad_connector import KiCadConnector
-            connector = KiCadConnector(source["config"])
+            from .connectors.kicad import KiCadConnector
+            connector = KiCadConnector(config["path"], project_id)
         elif source_type == "onshape":
-            from .connectors.onshape_connector import OnshapeConnector
-            connector = OnshapeConnector(source["config"])
-    except ImportError as e:
-        raise HTTPException(500, f"Connector not available: {e}")
+            from .connectors.onshape import OnshapeConnector
+            connector = OnshapeConnector(
+                config["document_id"],
+                config.get("workspace_id", ""),
+                project_id,
+                os.environ.get("ONSHAPE_ACCESS_KEY", ""),
+                os.environ.get("ONSHAPE_SECRET_KEY", ""),
+            )
+    except (ImportError, KeyError) as e:
+        raise HTTPException(500, f"Connector error: {e}")
 
     if not connector:
         raise HTTPException(400, f"Unknown source type: {source_type}")
 
+    # 3. Run ingest (onshape uses .sync())
     try:
-        ingested = connector.ingest()
+        if source_type == "onshape":
+            ingested = connector.sync()
+        else:
+            ingested = connector.ingest()
     except Exception as e:
         raise HTTPException(500, f"Sync failed: {e}")
 
-    # Create entities and relations via context engine
-    created_entities = []
+    new_data = {"items": ingested.get("items", [])}
+    entities_created = 0
+    entities_updated = 0
+    changes = []
+
     if context_engine:
-        for ent_data in ingested.get("entities", []):
-            ent = Entity(
+        # 4. Snapshot: get previous, create new
+        old_snapshot = context_engine.get_latest_snapshot(source_id)
+        new_snapshot = context_engine.create_snapshot(source_id, project_id, new_data)
+
+        # 5. Compute diff if previous snapshot exists
+        diffs = []
+        if old_snapshot:
+            diffs = context_engine.compute_diff(old_snapshot.data, new_data)
+
+        # 6. Upsert entities — check if source_ref already exists
+        existing_entities = context_engine.get_entities_by_project(project_id)
+        existing_by_ref = {}
+        for e in existing_entities:
+            if e.source_ref:
+                existing_by_ref[e.source_ref] = e
+
+        for ent in ingested.get("entities", []):
+            if ent.source_ref and ent.source_ref in existing_by_ref:
+                # Update existing entity
+                old = existing_by_ref[ent.source_ref]
+                context_engine.update_entity(old.id, {
+                    "name": ent.name,
+                    "description": ent.description,
+                    "metadata": ent.metadata,
+                })
+                entities_updated += 1
+            else:
+                context_engine.create_entity(ent)
+                entities_created += 1
+
+        # 7. Create relations
+        for rel in ingested.get("relations", []):
+            context_engine.create_relation(rel)
+
+        # 8. Log change events from diffs
+        for diff in diffs:
+            change_type = {"added": ChangeType.ADDED, "modified": ChangeType.MODIFIED,
+                           "removed": ChangeType.REMOVED}.get(diff["type"], ChangeType.MODIFIED)
+            item = diff.get("new") or diff.get("old") or {}
+            ce = ChangeEvent(
                 project_id=project_id,
-                entity_type=EntityType(ent_data.get("entity_type", "software_module")),
-                name=ent_data["name"],
-                description=ent_data.get("description", ""),
-                metadata=ent_data.get("metadata", {}),
-                source=SourceType(source_type),
-                source_ref=ent_data.get("source_ref", ""),
+                source_connection_id=source_id,
+                change_type=change_type,
+                entity_id=item.get("ref", ""),
+                entity_name=item.get("name", item.get("ref", "")),
+                description=f"{diff['type']} via {source_type} sync",
+                diff_data={"changed_fields": diff.get("changed_fields", [])},
+                attributed_to=source_type,
             )
-            context_engine.add_entity(ent)
-            created_entities.append(ent)
-
-        for rel_data in ingested.get("relations", []):
-            rel = Relation(
-                project_id=project_id,
-                source_entity_id=rel_data["source_entity_id"],
-                target_entity_id=rel_data["target_entity_id"],
-                relation_type=RelationType(rel_data.get("relation_type", "connected_to")),
+            context_engine.log_change_event(ce)
+            changes.append({
+                "type": diff["type"],
+                "ref": diff.get("ref", ""),
+                "changed_fields": diff.get("changed_fields", []),
+            })
+    else:
+        # No context engine — direct DB inserts
+        conn = get_connection()
+        for ent in ingested.get("entities", []):
+            conn.execute(
+                "INSERT OR IGNORE INTO entities (id, project_id, entity_type, name, description, metadata, source, source_ref, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (ent.id, ent.project_id,
+                 ent.entity_type.value if isinstance(ent.entity_type, EntityType) else ent.entity_type,
+                 ent.name, ent.description, json.dumps(ent.metadata),
+                 ent.source.value if isinstance(ent.source, SourceType) else ent.source,
+                 ent.source_ref, ent.created_at, ent.updated_at),
             )
-            context_engine.add_relation(rel)
+            entities_created += 1
+        for rel in ingested.get("relations", []):
+            conn.execute(
+                "INSERT OR IGNORE INTO relations (id, project_id, source_entity_id, target_entity_id, relation_type, metadata, confidence, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (rel.id, rel.project_id, rel.source_entity_id, rel.target_entity_id,
+                 rel.relation_type.value if isinstance(rel.relation_type, RelationType) else rel.relation_type,
+                 json.dumps(rel.metadata), rel.confidence, rel.created_at),
+            )
+        conn.commit()
+        conn.close()
 
-        # Snapshot and diff
-        try:
-            context_engine.create_snapshot(source_id, project_id)
-        except Exception:
-            pass
-
-    # Log change events
+    # 9. Update source last_synced_at
     now = _now()
     conn = get_connection()
-    for ent in created_entities:
-        ce = ChangeEvent(
-            project_id=project_id,
-            source_connection_id=source_id,
-            change_type=ChangeType.ADDED,
-            entity_id=ent.id,
-            entity_name=ent.name,
-            description=f"Synced from {source_type}",
-            attributed_to=source_type,
-        )
-        conn.execute(
-            "INSERT INTO change_events (id, project_id, source_connection_id, change_type, entity_id, entity_name, description, attributed_to, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (ce.id, ce.project_id, ce.source_connection_id, ce.change_type.value,
-             ce.entity_id, ce.entity_name, ce.description, ce.attributed_to, ce.created_at),
-        )
-
-    # Update source last_synced_at
     conn.execute("UPDATE source_connections SET last_synced_at=?, status='connected' WHERE id=?",
                  (now, source_id))
     conn.commit()
     conn.close()
 
+    # 10. Run cross-domain linking
+    link_results = {}
+    if linker:
+        try:
+            link_results = linker.link_project(project_id)
+        except Exception as e:
+            print(f"[linker] error: {e}")
+
     # Broadcast activity
     await broadcast_ws(project_id, {
         "event": "team_activity",
         "source_type": source_type,
-        "entities_created": len(created_entities),
+        "entities_created": entities_created,
+        "entities_updated": entities_updated,
     })
 
     return {
-        "synced": True,
-        "entities_created": len(created_entities),
-        "source_type": source_type,
+        "success": True,
+        "entities_created": entities_created,
+        "entities_updated": entities_updated,
+        "relations_linked": sum(
+            v.get("relations_created", 0) for v in link_results.values() if isinstance(v, dict)
+        ),
+        "descriptions_enriched": link_results.get("enriched", {}).get("enriched", 0) if isinstance(link_results.get("enriched"), dict) else 0,
+        "changes": changes,
     }
 
 
@@ -391,19 +483,17 @@ async def create_entity(project_id: str, body: EntityCreate):
         source=SourceType(body.source),
         source_ref=body.source_ref,
     )
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO entities (id, project_id, entity_type, name, description, metadata, source, source_ref, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (ent.id, ent.project_id, ent.entity_type.value, ent.name, ent.description,
-         json.dumps(ent.metadata), ent.source.value, ent.source_ref, ent.created_at, ent.updated_at),
-    )
-    conn.commit()
-    conn.close()
     if context_engine:
-        try:
-            context_engine.add_entity(ent)
-        except Exception:
-            pass
+        context_engine.create_entity(ent)
+    else:
+        conn = get_connection()
+        conn.execute(
+            "INSERT INTO entities (id, project_id, entity_type, name, description, metadata, source, source_ref, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (ent.id, ent.project_id, ent.entity_type.value, ent.name, ent.description,
+             json.dumps(ent.metadata), ent.source.value, ent.source_ref, ent.created_at, ent.updated_at),
+        )
+        conn.commit()
+        conn.close()
     return {"id": ent.id, "name": ent.name, "entity_type": ent.entity_type.value}
 
 
@@ -432,19 +522,17 @@ async def create_relation(project_id: str, body: RelationCreate):
         metadata=body.metadata,
         confidence=body.confidence,
     )
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO relations (id, project_id, source_entity_id, target_entity_id, relation_type, metadata, confidence, created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (rel.id, rel.project_id, rel.source_entity_id, rel.target_entity_id,
-         rel.relation_type.value, json.dumps(rel.metadata), rel.confidence, rel.created_at),
-    )
-    conn.commit()
-    conn.close()
     if context_engine:
-        try:
-            context_engine.add_relation(rel)
-        except Exception:
-            pass
+        context_engine.create_relation(rel)
+    else:
+        conn = get_connection()
+        conn.execute(
+            "INSERT INTO relations (id, project_id, source_entity_id, target_entity_id, relation_type, metadata, confidence, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (rel.id, rel.project_id, rel.source_entity_id, rel.target_entity_id,
+             rel.relation_type.value, json.dumps(rel.metadata), rel.confidence, rel.created_at),
+        )
+        conn.commit()
+        conn.close()
     return {"id": rel.id, "relation_type": rel.relation_type.value}
 
 
@@ -454,9 +542,7 @@ async def create_relation(project_id: str, body: RelationCreate):
 async def get_graph(project_id: str, center_entity_id: str = None, radius: int = 2):
     if context_engine:
         try:
-            if center_entity_id:
-                return context_engine.get_subgraph(project_id, center_entity_id, radius)
-            return context_engine.get_full_graph(project_id)
+            return context_engine.get_subgraph(project_id, center_entity_id, radius)
         except Exception as e:
             raise HTTPException(500, str(e))
     # Fallback: raw DB query
@@ -475,6 +561,8 @@ async def get_graph(project_id: str, center_entity_id: str = None, radius: int =
 
 @router.get("/api/projects/{project_id}/changes")
 async def list_changes(project_id: str):
+    if context_engine:
+        return context_engine.get_recent_changes(project_id)
     conn = get_connection()
     rows = conn.execute(
         "SELECT * FROM change_events WHERE project_id=? ORDER BY created_at DESC LIMIT 100",
@@ -497,9 +585,23 @@ async def get_impact(project_id: str, entity_id: str):
     if not context_engine:
         raise HTTPException(503, "Context engine unavailable")
     try:
-        return context_engine.analyze_impact(project_id, entity_id)
+        return context_engine.analyze_impact(entity_id, project_id)
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+# ── Cross-Domain Linker ───────────────────────────────────────────────
+
+@router.post("/api/projects/{project_id}/link")
+async def link_project(project_id: str):
+    """Re-run cross-domain linking for a project."""
+    if not linker:
+        raise HTTPException(503, "Linker unavailable")
+    try:
+        result = linker.link_project(project_id)
+        return result
+    except Exception as e:
+        raise HTTPException(500, f"Linking failed: {e}")
 
 
 # ── Agent ─────────────────────────────────────────────────────────────
@@ -653,6 +755,51 @@ async def get_bench_logs(project_id: str):
     if not bench:
         return {"report": "No live bench running", "anomaly_count": 0}
     return bench.get_anomaly_report()
+
+
+@router.post("/api/projects/{project_id}/live-bench/discover")
+async def discover_devices(project_id: str):
+    """Analyze current telemetry to auto-discover connected peripherals and build the graph."""
+    bench = live_benches.get(project_id)
+    if not bench or not bench.running:
+        raise HTTPException(400, "Live bench not running — connect first")
+
+    state = bench.get_current_state()
+    signals = state.get("signals", {})
+    if not signals:
+        raise HTTPException(400, "No signals received yet — wait a few seconds after connecting")
+
+    if not discovery:
+        raise HTTPException(503, "Device discovery unavailable")
+
+    # Get port info if serial connection
+    port_info = None
+    if bench.serial_connection:
+        port_info = {
+            "device": bench.serial_connection.port,
+            "is_arduino": True,
+        }
+
+    try:
+        result = discovery.discover_from_telemetry(project_id, signals, port_info)
+
+        # Also run cross-domain linker after discovery
+        if linker:
+            try:
+                link_result = linker.link_project(project_id)
+                result["cross_domain_links"] = link_result
+            except Exception as e:
+                print(f"[linker] error after discovery: {e}")
+
+        # Rebuild signal-entity map now that we have new entities
+        mapping = build_signal_entity_map(project_id)
+        bench.set_signal_entity_map(mapping)
+
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Discovery failed: {e}")
 
 
 @router.get("/api/serial-ports")
@@ -830,18 +977,38 @@ async def camera_status(project_id: str, ip: str = "192.168.4.1"):
 # ── Activity ──────────────────────────────────────────────────────────
 
 @router.get("/api/projects/{project_id}/activity")
-async def get_activity(project_id: str):
+async def get_activity(project_id: str, limit: int = 50):
     conn = get_connection()
-    changes = conn.execute(
-        "SELECT id, 'change' as type, entity_name as title, description, attributed_to, created_at FROM change_events WHERE project_id=? ORDER BY created_at DESC LIMIT 50",
-        (project_id,),
-    ).fetchall()
-    issues = conn.execute(
-        "SELECT id, 'issue' as type, title, description, reported_by as attributed_to, created_at FROM issues WHERE project_id=? ORDER BY created_at DESC LIMIT 50",
-        (project_id,),
-    ).fetchall()
-    conn.close()
+    activity = []
 
-    activity = [dict(r) for r in changes] + [dict(r) for r in issues]
-    activity.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return activity[:50]
+    # Changes
+    changes = conn.execute(
+        "SELECT * FROM change_events WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
+        (project_id, limit)
+    ).fetchall()
+    for c in changes:
+        cd = dict(c)
+        activity.append({
+            "type": "change",
+            "user": cd.get("attributed_to", "System"),
+            "description": cd.get("description", f"Changed {cd.get('entity_name', 'unknown')}"),
+            "timestamp": cd.get("created_at", ""),
+        })
+
+    # Issues
+    issues = conn.execute(
+        "SELECT * FROM issues WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
+        (project_id, limit)
+    ).fetchall()
+    for i in issues:
+        d = dict(i)
+        activity.append({
+            "type": "issue",
+            "user": d.get("reported_by", "Unknown"),
+            "description": d.get("title", ""),
+            "timestamp": d.get("created_at", ""),
+        })
+
+    conn.close()
+    activity.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    return activity[:limit]
