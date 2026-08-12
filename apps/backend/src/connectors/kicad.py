@@ -84,7 +84,7 @@ class KiCadConnector:
                 comment_block = match.group(2)
                 # Parse comments like ";; U1.D5 → U2.PWMA" or ";; U5.OUT → U1.A0"
                 for conn_match in re.finditer(
-                    r'(\w+)\.(\w+)\s*[→->]+\s*(\w+)\.(\w+)',
+                    r'(\w+)\.(\w+)\s*(?:→|->)\s*(\w+)\.(\w+)',
                     comment_block
                 ):
                     ref1, pin1 = conn_match.group(1), conn_match.group(2)
@@ -118,7 +118,7 @@ class KiCadConnector:
 
             # Strategy 4: Parse wire comments like ";; Motor PWM: U1.D5 → U2.PWMA (MOTOR_L_PWM)"
             for wire_match in re.finditer(
-                r';;\s*.*?(\w+)\.(\w+)\s*[→->]+\s*(\w+)\.(\w+)\s*\((\w+)\)',
+                r';;\s*.*?(\w+)\.(\w+)\s*(?:→|->)\s*(\w+)\.(\w+)\s*\((\w+)\)',
                 content
             ):
                 ref1, pin1 = wire_match.group(1), wire_match.group(2)

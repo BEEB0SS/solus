@@ -98,16 +98,22 @@ Everything degrades gracefully: without keys the agent endpoints report they're 
 
 > **Troubleshooting:** if the Live Bench connection dot never turns green and the vite console logs `ws proxy error: write EPIPE`, the backend is running under a Python environment without the `websockets` package (uvicorn then answers WebSocket upgrades with plain 404s). Start it from the project venv: `.venv/bin/uvicorn src.main:app --port 8000`.
 
-### End-to-end check
+## Testing
 
-With the backend running:
+Unit tests cover the pure logic — the four behavioral anomaly detectors (fed synthetic telemetry buffers), the snapshot diff engine, and the KiCad schematic parser (run against the real Elegoo schematic in `demo-assets/` as a fixture):
 
 ```bash
 cd apps/backend
-python3 tests/test_demo_flow.py
+.venv/bin/pytest
 ```
 
-This walks the whole flow against the live server: create project → sync `demo-assets/` sources → build graph → start simulated bench → detect anomalies → query the agent.
+An end-to-end script walks the whole flow against a live server — create project → sync `demo-assets/` sources → build graph → start simulated bench → detect anomalies → query the agent:
+
+```bash
+python3 tests/test_demo_flow.py   # backend must be running on :8000
+```
+
+The frontend typechecks with `pnpm typecheck` (also aliased as `pnpm test`) and bundles with `pnpm build` from `apps/desktop`.
 
 ## The demo
 

@@ -4,9 +4,11 @@
   "description": "Solus desktop app — AI-powered debugging workspace for robotics",
   "main": "src/main/main.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "dev:web": "vite",
-    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\""
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --noEmit"
   },
   "keywords": [],
   "author": "Pratham Madaram",

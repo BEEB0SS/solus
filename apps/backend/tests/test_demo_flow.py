@@ -6,12 +6,16 @@ Usage:
     cd apps/backend && python3 tests/test_demo_flow.py
 """
 
+import os
 import requests
 import time
 import json
 import sys
 
 BASE = "http://127.0.0.1:8000"
+# demo-asset paths must be absolute — the server resolves relative paths
+# against its own cwd, not this script's.
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 passed = 0
 failed = 0
@@ -76,7 +80,7 @@ def t_add_kicad():
     global kid
     r = requests.post(f"{BASE}/api/projects/test-demo/sources", json={
         "source_type": "kicad", "name": "PCB",
-        "config": {"path": "demo-assets/elegoo_kicad"},
+        "config": {"path": os.path.join(REPO_ROOT, "demo-assets", "elegoo_kicad")},
     })
     assert r.status_code == 200
     kid = r.json()["id"]
@@ -104,7 +108,7 @@ def t_add_github():
     global gid
     r = requests.post(f"{BASE}/api/projects/test-demo/sources", json={
         "source_type": "github", "name": "Code",
-        "config": {"path": "demo-assets/robot-code"},
+        "config": {"path": os.path.join(REPO_ROOT, "demo-assets", "robot-code")},
     })
     assert r.status_code == 200
     gid = r.json()["id"]

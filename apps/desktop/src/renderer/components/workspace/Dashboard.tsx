@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useProjectStore } from '../../stores/projectStore'
+import { sourceInputToConfig } from './sourceConfig'
 import {
   FolderGit2, Cpu, Box, RefreshCw, Plus, Users, Clock, GitCommit,
   Target, Pencil,
@@ -75,18 +76,7 @@ export default function Dashboard() {
     if (!srcInput.trim()) return
     setAddingSrc(true)
     try {
-      let config: Record<string, any> = {}
-      let name = ''
-      if (sourceType === 'github') {
-        config = { path: srcInput.trim() }
-        name = srcInput.trim().split('/').pop() || 'github-repo'
-      } else if (sourceType === 'kicad') {
-        config = { path: srcInput.trim() }
-        name = srcInput.trim().split('/').pop() || 'kicad-project'
-      } else if (sourceType === 'onshape') {
-        config = { url: srcInput.trim() }
-        name = 'onshape-model'
-      }
+      const { config, name } = sourceInputToConfig(sourceType, srcInput)
       const source = await store.addSource(pid, sourceType, name, config)
       if (source?.id) {
         store.syncSource(pid, source.id).catch(() => {})
