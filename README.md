@@ -73,10 +73,10 @@ No robot required — the Live Bench has a **simulated mode** that generates rea
 
 ```bash
 cd apps/backend
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn src.main:app --port 8000
+./run.sh
 ```
+
+The script creates the venv and installs `requirements.txt` on first run, then starts uvicorn on :8000 from the venv. (Equivalent manual steps: `python3 -m venv .venv`, `.venv/bin/pip install -r requirements.txt`, `.venv/bin/uvicorn src.main:app --port 8000` — but always the venv's uvicorn, see the troubleshooting note below.)
 
 ### Frontend
 
