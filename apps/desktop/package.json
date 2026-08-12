@@ -1,7 +1,7 @@
 {
   "name": "solus-desktop",
   "version": "1.0.0",
-  "description": "",
+  "description": "Solus desktop app — AI-powered debugging workspace for robotics",
   "main": "src/main/main.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -9,8 +9,8 @@
     "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\""
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Pratham Madaram",
+  "license": "MIT",
   "packageManager": "pnpm@10.28.1",
   "dependencies": {
     "@types/three": "^0.183.1",
