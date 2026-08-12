@@ -101,7 +101,7 @@ export default function IntelligenceTab() {
   }
 
   const renderContent = (content: string, msgId: string) => {
-    const parts: JSX.Element[] = []
+    const parts: React.JSX.Element[] = []
     let i = 0
     const lines = content.split('\n')
     let lineIdx = 0
