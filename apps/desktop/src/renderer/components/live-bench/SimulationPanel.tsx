@@ -195,16 +195,15 @@ export default function SimulationPanel({ pid, serialConnected, sendSerialComman
   }, [bothActive, pid]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Sim controls ──
-  const handleManualCommand = useCallback(async (command: string) => {
+  const handleManualCommand = useCallback(async (command: string, nSteps?: number) => {
     const projectId = pid || 'demo'
     try {
       const res = await fetch(`/api/projects/${projectId}/simulator/manual`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command }),
+        body: JSON.stringify(nSteps ? { command, n_steps: nSteps } : { command }),
       })
       if (!res.ok) { console.error('[sim] manual API error:', res.status); return }
       const state = await res.json()
-      console.log('[sim] WASD response:', command, 'chassis:', state?.bodies?.chassis?.pos, 'scene:', !!sceneRef.current, 'meshes:', Object.keys(meshesRef.current).length)
       updateScene(state)
     } catch (e) { console.error('[sim] manual command failed:', e) }
   }, [pid, updateScene])
@@ -304,31 +303,91 @@ export default function SimulationPanel({ pid, serialConnected, sendSerialComman
     setResyncing(false)
   }, [pid, simParams, updateParams]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Keyboard controls ──
+  // ── Keyboard controls (hold-to-drive) ──
+  // Held commands live in refs so the 10Hz drive loop survives re-renders;
+  // the last-pressed key wins when several are held.
+  const heldCmdsRef = useRef<string[]>([])
+  const driveIvRef = useRef(0)
+  const manualBusyRef = useRef(false)
+  const serialConnectedRef = useRef(serialConnected)
+  serialConnectedRef.current = serialConnected
+  const sendSerialRef = useRef(sendSerialCommand)
+  sendSerialRef.current = sendSerialCommand
+
+  const driveTick = useCallback(async () => {
+    const cmd = heldCmdsRef.current[heldCmdsRef.current.length - 1]
+    if (!cmd || manualBusyRef.current) return
+    manualBusyRef.current = true
+    try {
+      // 50 steps at dt=0.002 per 100ms tick keeps the sim at real-time speed
+      await handleManualCommand(cmd, 50)
+    } finally {
+      manualBusyRef.current = false
+    }
+  }, [handleManualCommand])
+
+  const stopDriving = useCallback(() => {
+    heldCmdsRef.current = []
+    if (driveIvRef.current) { window.clearInterval(driveIvRef.current); driveIvRef.current = 0 }
+    handleManualCommand('STOP')
+    if (serialConnectedRef.current) sendSerialRef.current('STOP')
+  }, [handleManualCommand])
+
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
+    const cmdMap: Record<string, string> = {
+      'w': 'FORWARD', 'arrowup': 'FORWARD', 's': 'REVERSE', 'arrowdown': 'REVERSE',
+      'a': 'LEFT', 'arrowleft': 'LEFT', 'd': 'RIGHT', 'arrowright': 'RIGHT',
+    }
+
+    const onKeyDown = (e: KeyboardEvent) => {
       if (!simPanelFocused) return
       const key = e.key.toLowerCase()
       if (['w', 's', 'a', 'd', ' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
         e.preventDefault()
       }
-      const cmdMap: Record<string, string> = {
-        'w': 'FORWARD', 'arrowup': 'FORWARD', 's': 'REVERSE', 'arrowdown': 'REVERSE',
-        'a': 'LEFT', 'arrowleft': 'LEFT', 'd': 'RIGHT', 'arrowright': 'RIGHT', ' ': 'STOP',
-      }
+      if (key === ' ') { stopDriving(); return }
       const cmd = cmdMap[key]
-      if (cmd) {
-        handleManualCommand(cmd)
-        if (serialConnected) sendSerialCommand(cmd)
+      if (!cmd || e.repeat) return
+      if (!heldCmdsRef.current.includes(cmd)) heldCmdsRef.current.push(cmd)
+      if (serialConnectedRef.current) sendSerialRef.current(cmd)
+      if (!driveIvRef.current) {
+        driveTick()
+        driveIvRef.current = window.setInterval(driveTick, 100)
       }
     }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [simPanelFocused, serialConnected, handleManualCommand, sendSerialCommand])
+
+    // Keyup is not gated on focus so releasing a key always stops the drive,
+    // even if the panel blurred mid-hold.
+    const onKeyUp = (e: KeyboardEvent) => {
+      const cmd = cmdMap[e.key.toLowerCase()]
+      if (!cmd || !heldCmdsRef.current.includes(cmd)) return
+      heldCmdsRef.current = heldCmdsRef.current.filter(c => c !== cmd)
+      const next = heldCmdsRef.current[heldCmdsRef.current.length - 1]
+      if (next) {
+        if (serialConnectedRef.current) sendSerialRef.current(next)
+      } else {
+        stopDriving()
+      }
+    }
+
+    const onWindowBlur = () => { if (heldCmdsRef.current.length) stopDriving() }
+
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onWindowBlur)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onWindowBlur)
+    }
+  }, [simPanelFocused, driveTick, stopDriving])
 
   // Cleanup
   useEffect(() => {
-    return () => { if (pidIntervalRef.current) window.clearInterval(pidIntervalRef.current) }
+    return () => {
+      if (pidIntervalRef.current) window.clearInterval(pidIntervalRef.current)
+      if (driveIvRef.current) window.clearInterval(driveIvRef.current)
+    }
   }, [])
 
   return (
@@ -341,7 +400,7 @@ export default function SimulationPanel({ pid, serialConnected, sendSerialComman
       <div className="flex items-center gap-2 mb-2">
         <Activity size={12} className="text-solus-accent-bright" />
         <span className="text-[10px] font-mono font-semibold uppercase tracking-widest text-solus-text-muted">Simulation (MuJoCo)</span>
-        {simPanelFocused && <span className="text-[9px] font-mono text-solus-text-muted ml-auto">WASD to drive</span>}
+        {simPanelFocused && <span className="text-[9px] font-mono text-solus-text-muted ml-auto">hold WASD to drive · space stops</span>}
       </div>
 
       {/* Three.js container */}

@@ -70,7 +70,11 @@ async def sim_manual_control(project_id: str, req: dict):
         "STOP": (0.0, 0.0),
     }
     left, right = motor_map.get(command.upper(), (0.0, 0.0))
-    result = simulator.step_manual(left, right, n_steps=500)
+    try:
+        n_steps = max(1, min(int(req.get("n_steps", 500)), 2000))
+    except (TypeError, ValueError):
+        n_steps = 500
+    result = simulator.step_manual(left, right, n_steps=n_steps)
     return result
 
 
