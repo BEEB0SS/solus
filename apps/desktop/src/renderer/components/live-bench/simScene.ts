@@ -57,15 +57,15 @@ export function createScene(container: HTMLDivElement) {
   scene.add(dirLight)
   scene.add(new THREE.AmbientLight(0x666680, 1.0))
 
-  // Ground plane with grid
-  const groundGeo = new THREE.PlaneGeometry(4, 4)
+  // Ground plane with grid — large enough that the car can't drive off it
+  const groundGeo = new THREE.PlaneGeometry(40, 40)
   const groundMat = new THREE.MeshStandardMaterial({ color: 0x1a1a24, roughness: 0.9 })
   const ground = new THREE.Mesh(groundGeo, groundMat)
   ground.rotation.x = -Math.PI / 2
   ground.position.y = -0.001
   scene.add(ground)
 
-  const grid = new THREE.GridHelper(4, 40, 0x2a2a3e, 0x222235)
+  const grid = new THREE.GridHelper(40, 400, 0x2a2a3e, 0x222235)
   scene.add(grid)
 
   // Trail line

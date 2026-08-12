@@ -71,6 +71,17 @@ export default function SimulationPanel({ pid, serialConnected, sendSerialComman
       mesh.quaternion.set(body.quat[1], body.quat[3], -body.quat[2], body.quat[0])
     }
 
+    // Follow the chassis: move the orbit target (and camera by the same
+    // delta, preserving the user's angle/zoom) so the car never drives
+    // out of view.
+    if (state.bodies.chassis) {
+      const cp = state.bodies.chassis.pos
+      const target = new THREE.Vector3(cp[0], cp[2], -cp[1])
+      const delta = target.clone().sub(s.controls.target)
+      s.controls.target.copy(target)
+      s.camera.position.add(delta)
+    }
+
     // Update trail
     if (state.bodies.chassis) {
       const cp = state.bodies.chassis.pos
