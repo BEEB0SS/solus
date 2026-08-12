@@ -96,6 +96,8 @@ Copy `.env.example` to `.env` at the repo root:
 
 Everything degrades gracefully: without keys the agent endpoints report they're unconfigured, and without `mujoco`/`pyserial` installed the simulator falls back to a kinematic stub and serial features disable themselves.
 
+> **Troubleshooting:** if the Live Bench connection dot never turns green and the vite console logs `ws proxy error: write EPIPE`, the backend is running under a Python environment without the `websockets` package (uvicorn then answers WebSocket upgrades with plain 404s). Start it from the project venv: `.venv/bin/uvicorn src.main:app --port 8000`.
+
 ### End-to-end check
 
 With the backend running:
