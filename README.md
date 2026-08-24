@@ -1,6 +1,6 @@
 # Solus
 
-**An AI-powered debugging workspace for robotics.** Solus connects to a real robot, streams live telemetry, detects behavioral bugs through pattern analysis, and uses an AI agent that reasons over the *whole* system — firmware, electronics, and mechanical design — to diagnose the root cause and flash a fix.
+**An AI-powered debugging workspace for robotics.** Solus connects to a real robot, streams live telemetry, detects behavioral bugs through pattern analysis, and uses an AI agent that reasons over the *whole* system — firmware, electronics, mechanical design, and simulation — to diagnose the root cause and flash a fix.
 
 This is the first iteration of Solus, built as our submission to the **YC x Google DeepMind hackathon**.
 
